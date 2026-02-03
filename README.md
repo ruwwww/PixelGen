@@ -18,8 +18,8 @@
 
 <h5 align="center">
 
-[![hf_paper](https://img.shields.io/badge/🤗-Paper%20In%20HF-red.svg)](https://huggingface.co/papers/2511.19365)
-[![arXiv](https://img.shields.io/badge/Arxiv-2511.19365-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2511.19365) 
+[![hf_paper](https://img.shields.io/badge/🤗-Paper%20In%20HF-red.svg)](https://huggingface.co/papers/2602.02493)
+[![arXiv](https://img.shields.io/badge/Arxiv-2602.02493-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2602.02493) 
 [![Home Page](https://img.shields.io/badge/Project-<Website>-blue.svg)](https://zehong-ma.github.io/PixelGen/) 
 [![Huggingface](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Online_Demo-green)](https://dd0d187fc54e4b00ee.gradio.live/) 
 [![github](https://img.shields.io/github/stars/Zehong-Ma/PixelGen.svg?style=social)](https://github.com/Zehong-Ma/PixelGen/)
@@ -144,9 +144,9 @@ If you find PixelGen is useful in your research or applications, please consider
       title={PixelGen: Pixel Diffusion Beats Latent Diffusion with Perceptual Loss}, 
       author={Zehong Ma and Ruihan Xu and Shiliang Zhang},
       year={2026},
-      eprint={2511.19365},
+      eprint={2602.02493},
       archivePrefix={arXiv},
       primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2511.19365}, 
+      url={https://arxiv.org/abs/2602.02493}, 
 }
 ```
