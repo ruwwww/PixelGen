@@ -18,9 +18,13 @@ class IndentityMapping(nn.Module):
 class DINOv2(nn.Module):
     def __init__(self, weight_path:str=None, base_patch_size=16):
         super(DINOv2, self).__init__()
-        self.encoder = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14') # need to visit github for each run.
-        # self.encoder = torch.hub.load('/root/.cache/torch/hub/facebookresearch_dinov2_main', 'dinov2_vitb14', source="local")
-
+        try:
+            self.encoder = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
+        except Exception as e:
+            print(f"Failed to load DINOv2 from hub: {e}. Trying timm...")
+            import timm
+            self.encoder = timm.create_model('vit_base_patch14_dinov2', pretrained=True)
+        
         self.pos_embed = copy.deepcopy(self.encoder.pos_embed)
         self.encoder.head = torch.nn.Identity()
         self.patch_size = self.encoder.patch_embed.patch_size
