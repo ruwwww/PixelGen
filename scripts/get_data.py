@@ -38,7 +38,9 @@ def safe_extract(tar: tarfile.TarFile, path: str = "./"):
 def main():
     parser = argparse.ArgumentParser(description='Download and extract dataset from Hugging Face')
     parser.add_argument('--repo', type=str, default='ruwwww/batik-processed')
+    parser.add_argument('--repo-type', type=str, default='dataset', help='Repo type: dataset or model')
     parser.add_argument('--filename', type=str, default='batik-256.tar.gz')
+    parser.add_argument('--token', type=str, default=None, help='Hugging Face token (or use HUGGINGFACE_HUB_TOKEN env)')
     parser.add_argument('--out-dir', type=str, default='data')
     parser.add_argument('--force', action='store_true', help='Re-download and re-extract')
     args = parser.parse_args()
@@ -51,8 +53,13 @@ def main():
         print(f"Dataset already appears extracted at {expected_marker}; use --force to re-download/re-extract.")
         return
 
-    print(f"Downloading {args.filename} from {args.repo}...")
-    path = hf_hub_download(args.repo, filename=args.filename)  # uses HUGGINGFACE_HUB_TOKEN if needed
+    token = args.token or os.environ.get('HUGGINGFACE_HUB_TOKEN')
+
+    print(f"Downloading {args.filename} from {args.repo} (repo_type={args.repo_type})...")
+    hf_kwargs = {}
+    if token:
+        hf_kwargs['use_auth_token'] = token
+    path = hf_hub_download(args.repo, filename=args.filename, repo_type=args.repo_type, **hf_kwargs)  # uses token if provided
     print(f"Downloaded to {path}; extracting to {out_dir} ...")
 
     if not tarfile.is_tarfile(path):
