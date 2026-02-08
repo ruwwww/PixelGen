@@ -112,6 +112,7 @@ If you run in Docker and have your repository mounted at `/workspace` (recommend
 
 Upload from a container (one-shot):
 ```bash
+# existing uploader (legacy)
 docker run --rm --gpus all \
   -v /path/to/repo:/workspace \
   -w /workspace \
@@ -122,8 +123,24 @@ docker run --rm --gpus all \
     --hf-repo your-user/PixelGen-Exp-S --create-repo
 ```
 
+Upload using unified sync (preferred, single-repo layout):
+```bash
+# upload all checkpoints matching 50k interval into single HF repo under exp folder
+docker run --rm --gpus all \
+  -v /path/to/repo:/workspace \
+  -w /workspace \
+  -e HUGGINGFACE_HUB_TOKEN="$HF_TOKEN" \
+  pixelgen:cu130 \
+  python3 scripts/hf_sync.py upload \
+    --exp-dir /workspace/universal_pix_workdirs/exp_PixelGen_S \
+    --exp-name PixelGen_S \
+    --hf-repo ruwwww/batik-pixelgen-exp \
+    --interval 50000 --include-config
+```
+
 Download into the repo workspace (one-shot):
 ```bash
+# legacy downloader
 docker run --rm --gpus all \
   -v /path/to/repo:/workspace \
   -w /workspace \
@@ -131,6 +148,17 @@ docker run --rm --gpus all \
   pixelgen:cu130 \
   python3 scripts/hf_download_checkpoint.py \
     --hf-repo your-user/PixelGen-Exp-S --path exp_PixelGen_S/last.ckpt --out-dir /workspace/ckpts
+```
+
+Download specific step from single-repo layout (preferred):
+```bash
+docker run --rm --gpus all \
+  -v /path/to/repo:/workspace \
+  -w /workspace \
+  -e HUGGINGFACE_HUB_TOKEN="$HF_TOKEN" \
+  pixelgen:cu130 \
+  python3 scripts/hf_sync.py download \
+    --hf-repo ruwwww/batik-pixelgen-exp --exp-name PixelGen_S --step 50000 --out-dir /workspace/ckpts
 ```
 
 Notes:
