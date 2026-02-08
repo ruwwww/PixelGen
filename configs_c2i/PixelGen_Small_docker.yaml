@@ -1,7 +1,7 @@
 # Docker-friendly config for PixelGen Small (data mounted at /data)
 seed_everything: 1234
 tags:
-  exp: &exp PixelGen_S_docker
+  exp: &exp PixelGen_S_docker_repa_layer4
 trainer:
   default_root_dir: /workspace/universal_pix_workdirs
   accelerator: auto
@@ -12,7 +12,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
-      project: universal_flow_JiT_S_bs256_docker
+      project: universal_flow_JiT_S_bs256_docker_repa_layer4
       name: *exp
   num_sanity_val_steps: 0
   max_steps: 1000000
