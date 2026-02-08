@@ -18,7 +18,7 @@ trainer:
   max_steps: 1000000
   val_check_interval: null
   check_val_every_n_epoch: 1000000
-  accumulate_grad_batches: 4  # Effective batch size: 64 * 4 = 256
+  accumulate_grad_batches: 2  # Effective batch size: 128 * 2 = 256
   log_every_n_steps: 50
   deterministic: null
   inference_mode: true
@@ -111,7 +111,7 @@ data:
       resolution: 256
   eval_dataset: null
   pred_dataset: null
-  train_batch_size: 64
-  train_num_workers: 4
+  train_batch_size: 128
+  train_num_workers: 8
   pred_batch_size: 32
   pred_num_workers: 1
