@@ -6,3 +6,7 @@ pretrained_weights
 wandb
 merge_weight.py
 *.pyc
+*.png
+*.jpg
+*.gif
+*.mp4

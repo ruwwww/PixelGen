@@ -37,6 +37,7 @@ class LightningModel(pl.LightningModule):
                  optimizer: OptimizerCallable = None,
                  lr_scheduler: LRSchedulerCallable = None,
                  eval_original_model: bool = False,
+                 muon_cfg: Optional[Mapping] = None,
                  ):
         super().__init__()
         self.vae = vae
@@ -50,6 +51,8 @@ class LightningModel(pl.LightningModule):
         self.lr_scheduler = lr_scheduler
 
         self.eval_original_model = eval_original_model
+        # optional muon settings (populated from config)
+        self.muon_cfg = dict(muon_cfg) if muon_cfg is not None else {}
 
         self._strict_loading = False
 
@@ -74,13 +77,133 @@ class LightningModel(pl.LightningModule):
         params_denoiser = filter_nograd_tensors(self.denoiser.parameters())
         params_trainer = filter_nograd_tensors(self.diffusion_trainer.parameters())
         params_sampler = filter_nograd_tensors(self.diffusion_sampler.parameters())
+
+        # Try to detect Muon and prepare Muon-style param groups (hidden weights -> Muon, others -> Adam)
+        try:
+            import muon
+            muon_class = getattr(muon, "MuonWithAuxAdam", None)
+        except Exception:
+            muon_class = None
+
+        is_muon_configured = False
+        try:
+            if muon_class is not None:
+                opt_name = getattr(self.optimizer, "__name__", None) or getattr(self.optimizer, "__class__", None)
+                if self.optimizer is muon_class or (isinstance(opt_name, str) and "MuonWithAuxAdam" in opt_name) or getattr(self.optimizer, "__module__", "")=="muon":
+                    is_muon_configured = True
+        except Exception:
+            is_muon_configured = False
+
+        # Resolve hyperparameters from config (defaults follow recommended values)
+        muon_defaults = {
+            "lr": 0.02,
+            "weight_decay": 0.01,
+            "momentum": 0.95,
+            "nesterov": True,
+            "ns_steps": 5,
+        }
+        aux_defaults = {
+            "lr": 3e-4,
+            "weight_decay": 0.01,
+            "betas": (0.9, 0.95),
+            "eps": 1e-10,
+        }
+        # override with provided muon_cfg
+        muon_h = dict(muon_defaults)
+        aux_h = dict(aux_defaults)
+        if isinstance(self.muon_cfg, Mapping):
+            muon_h.update(self.muon_cfg.get("muon_group", {}))
+            aux_h.update(self.muon_cfg.get("aux_group", {}))
+
+        # default param groups (non-muon)
         param_groups = [
             {"params": params_denoiser, },
             {"params": params_trainer,},
             {"params": params_sampler, "lr": 1e-3},
         ]
-        # optimizer: torch.optim.Optimizer = self.optimizer([*params_trainer, *params_denoiser])
-        optimizer: torch.optim.Optimizer = self.optimizer(param_groups)
+
+        # If the optimizer appears to be Muon (class or module name contains 'muon'/'Muon'),
+        # build muon-style groups (hidden weights + aux) proactively.
+        try:
+            import muon as _muon
+            muon_class = getattr(_muon, "MuonWithAuxAdam", None)
+        except Exception:
+            muon_class = None
+
+        opt_name = getattr(self.optimizer, "__name__", None) or getattr(self.optimizer, "__class__", None)
+        looks_like_muon = False
+        try:
+            if muon_class is not None and (self.optimizer is muon_class or (isinstance(opt_name, str) and "MuonWithAuxAdam" in opt_name) or getattr(self.optimizer, "__module__", "").startswith("muon") or "muon" in str(self.optimizer).lower()):
+                looks_like_muon = True
+        except Exception:
+            looks_like_muon = False
+
+        if looks_like_muon:
+            hidden_weights = [p for p in params_denoiser if getattr(p, "ndim", 0) >= 2 and p.requires_grad]
+            aux_from_denoiser = [p for p in params_denoiser if not (getattr(p, "ndim", 0) >= 2 and p.requires_grad)]
+            aux = aux_from_denoiser + list(params_trainer) + list(params_sampler) + list(filter_nograd_tensors(self.vae.parameters())) + list(filter_nograd_tensors(self.conditioner.parameters()))
+
+            new_groups = []
+            if hidden_weights:
+                new_groups.append({
+                    "params": hidden_weights,
+                    "use_muon": True,
+                    "lr": float(muon_h.get("lr", 0.02)),
+                    "momentum": float(muon_h.get("momentum", 0.95)),
+                    "weight_decay": float(muon_h.get("weight_decay", 0.01)),
+                })
+            if aux:
+                new_groups.append({
+                    "params": aux,
+                    "use_muon": False,
+                    "lr": float(aux_h.get("lr", 3e-4)),
+                    "betas": tuple(aux_h.get("betas", (0.9, 0.95))),
+                    "eps": float(aux_h.get("eps", 1e-10)),
+                    "weight_decay": float(aux_h.get("weight_decay", 0.01)),
+                })
+            if new_groups:
+                param_groups = new_groups
+
+        # instantiate optimizer; if Muon complains about missing keys, rebuild muon-style groups and retry
+        try:
+            optimizer: torch.optim.Optimizer = self.optimizer(param_groups)
+        except AssertionError as e:
+            msg = str(e)
+            should_retry = False
+            if muon_class is not None:
+                try:
+                    if self.optimizer is muon_class or (isinstance(opt_name, str) and "MuonWithAuxAdam" in opt_name) or getattr(self.optimizer, "__module__", "").startswith("muon") or "muon" in str(self.optimizer).lower() or "use_muon" in msg:
+                        should_retry = True
+                except Exception:
+                    should_retry = True
+            if should_retry:
+                # rebuild muon-style groups from denoiser params
+                hidden_weights = [p for p in params_denoiser if getattr(p, "ndim", 0) >= 2 and p.requires_grad]
+                aux_from_denoiser = [p for p in params_denoiser if not (getattr(p, "ndim", 0) >= 2 and p.requires_grad)]
+                aux = aux_from_denoiser + list(params_trainer) + list(params_sampler) + list(filter_nograd_tensors(self.vae.parameters())) + list(filter_nograd_tensors(self.conditioner.parameters()))
+
+                param_groups = []
+                if hidden_weights:
+                    param_groups.append({
+                        "params": hidden_weights,
+                        "use_muon": True,
+                        "lr": float(muon_h.get("lr", 0.02)),
+                        "momentum": float(muon_h.get("momentum", 0.95)),
+                        "weight_decay": float(muon_h.get("weight_decay", 0.01)),
+                    })
+                if aux:
+                    param_groups.append({
+                        "params": aux,
+                        "use_muon": False,
+                        "lr": float(aux_h.get("lr", 3e-4)),
+                        "betas": tuple(aux_h.get("betas", (0.9, 0.95))),
+                        "eps": float(aux_h.get("eps", 1e-10)),
+                        "weight_decay": float(aux_h.get("weight_decay", 0.01)),
+                    })
+                optimizer = self.optimizer(param_groups)
+            else:
+                raise
+
         if self.lr_scheduler is None:
             return dict(
                 optimizer=optimizer
@@ -106,6 +229,26 @@ class LightningModel(pl.LightningModule):
     # sanity check before training start
     def on_train_start(self) -> None:
         self.ema_denoiser.to(torch.float32)
+
+        # Ensure a default process group exists for optimizers that expect distributed groups (e.g., Muon)
+        try:
+            import torch.distributed as dist
+            if dist.is_available() and not dist.is_initialized():
+                # Use NCCL if CUDA is available, otherwise GLOO
+                backend = "nccl" if torch.cuda.is_available() else "gloo"
+                # Provide sane defaults for single-process init
+                os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+                os.environ.setdefault("MASTER_PORT", "29500")
+                try:
+                    from datetime import timedelta
+                    dist.init_process_group(backend=backend, rank=0, world_size=1, timeout=timedelta(seconds=30))
+                    print(f"[Info] Initialized default process group with backend={backend} world_size=1")
+                except Exception as e:
+                    # If init fails, don't crash — Muon will still try and may raise a more specific error
+                    print(f"[Warning] init_process_group failed: {e}")
+        except Exception:
+            pass
+
         self.ema_tracker.setup_models(net=self.denoiser, ema_net=self.ema_denoiser)
 
     def on_load_checkpoint(self, checkpoint):

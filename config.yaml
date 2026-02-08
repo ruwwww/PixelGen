@@ -11,14 +11,14 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
-      name: PixelGen_S
+      name: jit_b_pixel_bs64_repa_4_lpips_pdino_muon
       save_dir: .
       version: null
       offline: false
       dir: null
       id: null
       anonymous: null
-      project: universal_flow_JiT_S_bs256
+      project: jit_b_pixel_bs64_repa_4_lpips_pdino_muon
       log_model: false
       experiment: null
       prefix: ''
@@ -57,7 +57,7 @@ trainer:
       save_weights_only: false
       mode: min
       auto_insert_metric_name: true
-      every_n_train_steps: 10000
+      every_n_train_steps: 50000
       train_time_interval: null
       every_n_epochs: null
       save_on_train_epoch_end: null
@@ -69,7 +69,7 @@ trainer:
   fast_dev_run: false
   max_epochs: null
   min_epochs: null
-  max_steps: 50000
+  max_steps: 400000
   min_steps: null
   max_time: null
   limit_train_batches: null
@@ -84,7 +84,7 @@ trainer:
   enable_checkpointing: null
   enable_progress_bar: null
   enable_model_summary: null
-  accumulate_grad_batches: 8
+  accumulate_grad_batches: 2
   gradient_clip_val: null
   gradient_clip_algorithm: null
   deterministic: null
@@ -117,9 +117,9 @@ model:
       input_size: 256
       patch_size: 16
       in_channels: 3
-      hidden_size: 512
-      depth: 8
-      num_heads: 8
+      hidden_size: 768
+      depth: 12
+      num_heads: 12
       mlp_ratio: 4.0
       attn_drop: 0.0
       proj_drop: 0.0
@@ -142,9 +142,9 @@ model:
         init_args:
           weight_path: ~/.cache/torch/hub/checkpoints/dinov2_vitb14_pretrain.pth
           base_patch_size: 16
-      align_layer: 7
-      proj_denoiser_dim: 512
-      proj_hidden_dim: 512
+      align_layer: 8
+      proj_denoiser_dim: 768
+      proj_hidden_dim: 768
       proj_encoder_dim: 768
       P_mean: -0.8
       P_std: 0.8
@@ -180,22 +180,23 @@ model:
       decay: 0.9999
       every_n_steps: 1
   optimizer:
-    class_path: torch.optim.AdamW
-    init_args:
-      lr: 0.0001
-      betas:
-      - 0.9
-      - 0.999
-      eps: 1.0e-08
-      weight_decay: 0.0
-      amsgrad: false
-      maximize: false
-      foreach: null
-      capturable: false
-      differentiable: false
-      fused: null
+    class_path: muon.MuonWithAuxAdam
   lr_scheduler: null
   eval_original_model: false
+  muon_cfg:
+    muon_group:
+      lr: 0.02
+      weight_decay: 0.01
+      momentum: 0.95
+      nesterov: true
+      ns_steps: 5
+    aux_group:
+      lr: 0.0003
+      weight_decay: 0.01
+      betas:
+      - 0.9
+      - 0.95
+      eps: 1.0e-10
 data:
   train_dataset:
     class_path: src.data.dataset.imagenet.PixImageNet
@@ -214,6 +215,6 @@ data:
   pred_batch_size: 32
   pred_num_workers: 1
 tags:
-  exp: PixelGen_S
-ckpt_path: ./universal_pix_workdirs/exp_PixelGen_S/last.ckpt
+  exp: jit_b_pixel_bs64_repa_4_lpips_pdino_muon
+ckpt_path: null
 weights_only: null
