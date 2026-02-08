@@ -115,7 +115,7 @@ data:
   train_dataset:
     class_path: src.data.dataset.imagenet.PixImageNet
     init_args:
-      root: /home/kuroko/ai/data/batik-256/images/ # set your data dir
+      root: /data/batik-256/images/ # Docker mount path
       resolution: 256
   eval_dataset: null
   pred_dataset: null
