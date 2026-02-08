@@ -1,7 +1,7 @@
 # lightning.pytorch==2.4.0
 seed_everything: 1234
 tags:
-  exp: &exp PixelGen_B
+  exp: &exp jit_b_pixel_bs64_repa_4_lpips_pdino_adamw
 huggingface_cache_dir: null
 trainer:
   default_root_dir: ./universal_pix_workdirs
@@ -13,10 +13,10 @@ trainer:
   logger:
       class_path: lightning.pytorch.loggers.WandbLogger
       init_args:
-        project: universal_flow_JiT_B_bs256
+        project: jit_b_pixel_ablation
         name: *exp
   num_sanity_val_steps: 0
-  max_steps: 800000 # 800k for 160 epochs, 4000k for 800 epochs
+  max_steps: 1000000 
   val_check_interval: null
   check_val_every_n_epoch: 1000000
   log_every_n_steps: 50
@@ -26,7 +26,7 @@ trainer:
   callbacks:
     - class_path: src.callbacks.model_checkpoint.CheckpointHook
       init_args:
-        every_n_train_steps: 100000
+        every_n_train_steps: 50000
         save_top_k: -1
         save_last: true
     - class_path: src.callbacks.save_images.SaveImagesHook
@@ -73,7 +73,7 @@ model:
         class_path: src.models.encoder.DINOv2
         init_args:
           weight_path: ~/.cache/torch/hub/checkpoints/dinov2_vitb14_pretrain.pth
-      align_layer: 8
+      align_layer: 4
       proj_denoiser_dim: *hidden_dim
       proj_hidden_dim: *hidden_dim
       proj_encoder_dim: 768
@@ -118,17 +118,8 @@ data:
       root: /home/kuroko/ai/data/batik-256/images/ # set your data dir
       resolution: 256
   eval_dataset: null
-  pred_dataset:
-    class_path: src.data.dataset.randn.ClassLabelRandomNDataset
-    init_args:
-      num_classes: *num_classes
-      max_num_instances: 100
-      noise_scale: 1.0
-      latent_shape:
-        - 3
-        - 256
-        - 256
-  train_batch_size: 32
+  pred_dataset: null
+  train_batch_size: 64
   train_num_workers: 4
   pred_batch_size: 32
   pred_num_workers: 1
