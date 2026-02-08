@@ -120,6 +120,6 @@ data:
   eval_dataset: null
   pred_dataset: null
   train_batch_size: 64
-  train_num_workers: 4
+  train_num_workers: 8
   pred_batch_size: 32
   pred_num_workers: 1
