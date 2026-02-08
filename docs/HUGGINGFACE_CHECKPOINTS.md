@@ -107,6 +107,38 @@ This uses `hf_hub_download` to pull a single file and saves it to `--out-dir`.
 
 ---
 
+## Docker-aware upload / download (workspace examples)
+If you run in Docker and have your repository mounted at `/workspace` (recommended), use the same scripts but point to `/workspace` paths.
+
+Upload from a container (one-shot):
+```bash
+docker run --rm --gpus all \
+  -v /path/to/repo:/workspace \
+  -w /workspace \
+  -e HUGGINGFACE_HUB_TOKEN="$HF_TOKEN" \
+  pixelgen:cu130 \
+  python3 scripts/hf_upload_checkpoint.py \
+    --exp-dir /workspace/universal_pix_workdirs/exp_PixelGen_S \
+    --hf-repo your-user/PixelGen-Exp-S --create-repo
+```
+
+Download into the repo workspace (one-shot):
+```bash
+docker run --rm --gpus all \
+  -v /path/to/repo:/workspace \
+  -w /workspace \
+  -e HUGGINGFACE_HUB_TOKEN="$HF_TOKEN" \
+  pixelgen:cu130 \
+  python3 scripts/hf_download_checkpoint.py \
+    --hf-repo your-user/PixelGen-Exp-S --path exp_PixelGen_S/last.ckpt --out-dir /workspace/ckpts
+```
+
+Notes:
+- These commands keep HF interactions inside the container and persist artifacts into the mounted `/workspace` tree (so they appear on the host as well).
+- Ensure `git` and `git-lfs` are available in your image if using the upload script (the current `hf_upload_checkpoint.py` uses `huggingface_hub.Repository` which uses git + lfs under the hood).
+
+---
+
 If you want, I can:
 - Add a GitHub Action example file to automate uploads, or
 - Run a test upload for `universal_pix_workdirs/exp_PixelGen_S/last.ckpt` to a repo name you provide.
