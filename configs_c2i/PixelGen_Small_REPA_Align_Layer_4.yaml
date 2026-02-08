@@ -1,7 +1,7 @@
 # lightning.pytorch==2.4.0
 seed_everything: 1234
 tags:
-  exp: &exp PixelGen_S
+  exp: &exp PixelGen_S_bs256_REPA_Layer4
 huggingface_cache_dir: null
 trainer:
   default_root_dir: ./universal_pix_workdirs
@@ -13,7 +13,7 @@ trainer:
   logger:
       class_path: lightning.pytorch.loggers.WandbLogger
       init_args:
-        project: universal_flow_JiT_S_bs256
+        project: universal_flow_JiT_S_bs256_REPA_Layer4
         name: *exp
   num_sanity_val_steps: 0
   max_steps: 1000000 # Reduced for small dataset and model
@@ -79,7 +79,7 @@ model:
         class_path: src.models.encoder.DINOv2
         init_args:
           weight_path: ~/.cache/torch/hub/checkpoints/dinov2_vitb14_pretrain.pth
-      align_layer: 7  # Middle layer (0-7) for better feature alignment in small models
+      align_layer: 3  # Layer 4 for better feature alignment in small models
       proj_denoiser_dim: *hidden_dim
       proj_hidden_dim: *hidden_dim
       proj_encoder_dim: 768
