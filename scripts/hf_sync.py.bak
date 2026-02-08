@@ -27,8 +27,10 @@ Environment:
 import argparse
 import os
 import re
+import shutil
+import tempfile
 import glob
-from huggingface_hub import HfApi, hf_hub_download, CommitOperationAdd
+from huggingface_hub import HfApi, Repository, create_repo, hf_hub_download
 
 STEP_RE = re.compile(r"step[=_-]?(\d+)")
 
@@ -65,54 +67,70 @@ def hf_path_for(exp_name, step, filename):
     return f"{exp_name}/step_{step}/{filename}"
 
 
+def upload_files_to_repo(repo_id, files, target_prefix, token):
+    # clone repo to temp dir and copy files under target_prefix
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Avoid downloading existing LFS objects when cloning (saves bandwidth/time)
+        prev = os.environ.get('GIT_LFS_SKIP_SMUDGE', None)
+        try:
+            os.environ['GIT_LFS_SKIP_SMUDGE'] = '1'
+            repo = Repository(tmpdir, clone_from=repo_id, use_auth_token=token)
+        finally:
+            # restore previous value
+            if prev is None:
+                os.environ.pop('GIT_LFS_SKIP_SMUDGE', None)
+            else:
+                os.environ['GIT_LFS_SKIP_SMUDGE'] = prev
+        target_dir = os.path.join(tmpdir, target_prefix)
+        os.makedirs(target_dir, exist_ok=True)
+        for p in files:
+            shutil.copy2(p, target_dir)
+        # metadata
+        meta = os.path.join(target_dir, 'uploaded_by.txt')
+        with open(meta, 'w') as fh:
+            fh.write(f'source_dir={os.getcwd()}\n')
+        repo.git_add(pattern='.')
+        repo.git_commit('Add checkpoint(s)')
+        repo.git_push()
+
+
 def upload_many_files_to_repo(repo_id, mapping, token):
-    """Upload multiple groups of files to a repo in a single commit using HfApi.
-    Does NOT clone the repository, so it avoids downloading LFS files.
+    """Upload multiple groups of files to a repo in a single clone & push.
 
     mapping: dict target_prefix -> list of file paths
     """
-    api = HfApi(token=token)
-    operations = []
-    
-    print(f"Preparing batch upload to {repo_id}...")
-    
-    for target_prefix, files in mapping.items():
-        # Add files
-        for p in files:
-            path_in_repo = f"{target_prefix}/{os.path.basename(p)}"
-            operations.append(CommitOperationAdd(path_in_repo=path_in_repo, path_or_fileobj=p))
-        
-        # Add metadata file
-        meta_path_in_repo = f"{target_prefix}/uploaded_by.txt"
-        meta_content = f"source_dir={os.getcwd()}\n".encode('utf-8')
-        operations.append(CommitOperationAdd(path_in_repo=meta_path_in_repo, path_or_fileobj=meta_content))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Avoid downloading existing LFS objects when cloning (saves bandwidth/time)
+        prev = os.environ.get('GIT_LFS_SKIP_SMUDGE', None)
+        try:
+            os.environ['GIT_LFS_SKIP_SMUDGE'] = '1'
+            repo = Repository(tmpdir, clone_from=repo_id, use_auth_token=token)
+        finally:
+            if prev is None:
+                os.environ.pop('GIT_LFS_SKIP_SMUDGE', None)
+            else:
+                os.environ['GIT_LFS_SKIP_SMUDGE'] = prev
 
-    if not operations:
-        print("No files to upload.")
-        return
-
-    print(f"Pushing {len(operations)} files to {repo_id} via HTTP API...")
-    api.create_commit(
-        repo_id=repo_id,
-        operations=operations,
-        commit_message="Add checkpoint(s) [via HfApi]"
-    )
-    print("Batch upload finished successfully.")
-
-
-def upload_files_to_repo(repo_id, files, target_prefix, token):
-    """Legacy wrapper, delegates to batch uploader."""
-    upload_many_files_to_repo(repo_id, {target_prefix: files}, token)
+        for target_prefix, files in mapping.items():
+            target_dir = os.path.join(tmpdir, target_prefix)
+            os.makedirs(target_dir, exist_ok=True)
+            for p in files:
+                shutil.copy2(p, target_dir)
+            # add per-target metadata
+            meta = os.path.join(target_dir, 'uploaded_by.txt')
+            with open(meta, 'w') as fh:
+                fh.write(f'source_dir={os.getcwd()}\n')
+        repo.git_add(pattern='.')
+        repo.git_commit('Add checkpoint(s)')
+        repo.git_push()
 
 
 def upload(exp_dir, exp_name, hf_repo, token, interval=50000, include_config=False, dry_run=False, create_repo_flag=False, all_files=False, include_last=False, allow_variants=False, step=None):
     token = token or os.environ.get('HUGGINGFACE_HUB_TOKEN')
-    api = HfApi(token=token)
-    
-    # Check if repo exists, create if needed
+    api = HfApi()
     if create_repo_flag:
-        api.create_repo(repo_id=hf_repo, exist_ok=True)
-    
+        create_repo(hf_repo, token=token, exist_ok=True)
+
     # gather candidate checkpoints
     candidates = []
     for root, _, files in os.walk(exp_dir):
@@ -145,83 +163,77 @@ def upload(exp_dir, exp_name, hf_repo, token, interval=50000, include_config=Fal
         return
 
     # remote files list for existence checks
-    try:
-        remote_files = api.list_repo_files(hf_repo, token=token)
-    except Exception as e:
-        print(f"Warning: could not list repo files (maybe it's empty or private/auth issue?): {e}")
-        remote_files = []
+    remote_files = api.list_repo_files(hf_repo, token=token)
 
-    # Prepare the batch map for everything we intend to upload
-    uploads_map = {}
-    
-    # Sort by step
-    sorted_candidates = sorted(selected, key=lambda t: (t[0] if t[0] is not None else 10**12, t[1]))
+    for s, ckpt_path in sorted(selected, key=lambda t: (t[0] if t[0] is not None else 10**12, t[1])):
+        step_key = f"step_{s}" if s is not None else 'latest'
+        basename = os.path.basename(ckpt_path)
+        target_prefix = f"{exp_name}/{step_key}"
 
-    for s, ckpt_path in sorted_candidates:
-        step_str = f"step_{s}" if s is not None else 'latest'
-        target_prefix = f"{exp_name}/{step_str}"
+        # decide whether to upload this exact filename
+        hf_file_path = hf_path_for(exp_name, s if s is not None else 'latest', basename)
+        already_remote = hf_file_path in remote_files
 
-        # 1. Determine candidate files for this step
-        candidate_files = [ckpt_path]
+        # if step exists remotely and not allowing variants and a file exists in the step folder, skip
+        if s is not None and not allow_variants:
+            exists = any(p.startswith(f"{exp_name}/step_{s}/") for p in remote_files)
+            if exists and not already_remote:
+                print(f"Remote step {s} already exists and variants are not allowed; skipping {basename}")
+                continue
+
+        # build files to upload
+        files = [ckpt_path]
         if include_config:
             cfgs = glob.glob(os.path.join(os.path.dirname(ckpt_path), "*.yaml")) + glob.glob(os.path.join(exp_dir, "*.yaml"))
-            candidate_files.extend(cfgs)
-        
-        # Deduplicate local list
-        candidate_files = list(set(candidate_files))
+            files += cfgs
 
-        # 2. Filter files that are already on remote
-        files_for_step = []
-        for local_path in candidate_files:
-            fname = os.path.basename(local_path)
-            remote_path = f"{target_prefix}/{fname}"
-            
-            if remote_path in remote_files:
-                # already exists
-                continue
-            
-            # Special check: if this is the main checkpoint and variants are disallowed
-            if local_path == ckpt_path and s is not None and not allow_variants:
-                # Check if any OTHER checkpoint exists in this folder
-                # (We already know 'remote_path' doesn't exist, otherwise we'd have hit the continue above)
-                exists_variant = any(p.startswith(f"{exp_name}/step_{s}/") and (p.endswith('.ckpt') or p.endswith('.pt')) for p in remote_files)
-                if exists_variant:
-                    print(f"Remote step {s} already has a checkpoint and variants are not allowed; skipping {fname}")
-                    continue
-
-            files_for_step.append(local_path)
-
-        if not files_for_step:
+        print(f"Uploading {basename} -> {hf_repo}/{target_prefix}/ (dry_run={dry_run})")
+        if dry_run:
+            for f in files:
+                print('   ', f)
             continue
-            
-        # Add to global batch map
-        if target_prefix not in uploads_map:
-            uploads_map[target_prefix] = []
-        
-        for f in files_for_step:
-            if f not in uploads_map[target_prefix]:
-                uploads_map[target_prefix].append(f)
-                print(f"Queued {os.path.basename(f)} for upload to {target_prefix}/")
 
-    if not uploads_map:
-        print("Nothing new to upload.")
-        return
+        # if the exact file already exists on remote, skip only that file
+        if already_remote:
+            print(f"Remote already has {hf_file_path}; skipping")
+            continue
 
-    print(f"Batch uploading {sum(len(v) for v in uploads_map.values())} files in one commit (dry_run={dry_run})")
-    if dry_run:
-        for tp, fls in uploads_map.items():
-            print('  target:', tp)
-            for f in fls:
-                print('    ', f)
-        return
-    
-    upload_many_files_to_repo(hf_repo, uploads_map, token)
+        # if multiple items will be uploaded, defer to a batched push for speed
+        uploads_map = {target_prefix: files}
+        # check if there are additional items queued (i.e., caller requested all_files or allow_variants)
+        remaining = [(ss, pp) for ss, pp in selected if not (ss == s and pp == ckpt_path)]
+        if remaining and (len(remaining) >= 1):
+            # include remaining entries in the uploads_map and perform a single push
+            for ss, pp in remaining:
+                tp = f"{exp_name}/step_{ss}" if ss is not None else f"{exp_name}/latest"
+                if tp in uploads_map:
+                    uploads_map[tp].append(pp)
+                else:
+                    uploads_map[tp] = [pp]
+
+            print(f"Batch uploading {sum(len(v) for v in uploads_map.values())} files in one repo push (dry_run={dry_run})")
+            if dry_run:
+                for tp, fls in uploads_map.items():
+                    print('  target:', tp)
+                    for f in fls:
+                        print('    ', f)
+                return
+            upload_many_files_to_repo(hf_repo, uploads_map, token)
+            print('Batch upload finished')
+            return
+
+        # otherwise just upload single file
+        if dry_run:
+            for f in files:
+                print('   ', f)
+            continue
+        upload_files_to_repo(hf_repo, files, target_prefix, token)
+        print('Upload finished')
 
 
 def list_steps(hf_repo, exp_name, token):
-    token = token or os.environ.get('HUGGINGFACE_HUB_TOKEN')
-    api = HfApi(token=token)
-    files = api.list_repo_files(hf_repo)
+    api = HfApi()
+    files = api.list_repo_files(hf_repo, token=token)
     steps = set()
     prefix = f"{exp_name}/step_"
     for p in files:
@@ -240,7 +252,7 @@ def download_step(hf_repo, exp_name, step, out_dir, token):
     token = token or os.environ.get('HUGGINGFACE_HUB_TOKEN')
     os.makedirs(out_dir, exist_ok=True)
     # list remote files first
-    api = HfApi(token=token)
+    api = HfApi()
     files = api.list_repo_files(hf_repo, token=token)
     prefix = f"{exp_name}/step_{step}/"
     matches = [p for p in files if p.startswith(prefix)]
