@@ -17,13 +17,19 @@ def constant(alpha, sigma):
 def time_shift_fn(t, timeshift=1.0):
     return t/(t+(1-t)*timeshift)
 
-class FlowMatchingTrainer(BaseTrainer):
+class PixelFlowMatchingTrainer(BaseTrainer):
+    """
+    Flow Matching Trainer for Pixel Space models.
+    Always uses x_pred parameterization (predicting x_0 directly) which is converted
+    to velocity target during training.
+    """
     def __init__(
             self,
             scheduler: BaseScheduler,
             loss_weight_fn:Callable=constant,
             lognorm_t=False,
             timeshift=1.0,
+            t_eps=0.05,
             *args,
             **kwargs
     ):
@@ -32,6 +38,7 @@ class FlowMatchingTrainer(BaseTrainer):
         self.scheduler = scheduler
         self.timeshift = timeshift
         self.loss_weight_fn = loss_weight_fn
+        self.t_eps = t_eps
         
     def _impl_trainstep(self, net, ema_net, solver, x, y, metadata=None):
         batch_size = x.shape[0]
@@ -45,11 +52,18 @@ class FlowMatchingTrainer(BaseTrainer):
         dalpha = self.scheduler.dalpha(t)
         sigma = self.scheduler.sigma(t)
         dsigma = self.scheduler.dsigma(t)
-        w = self.scheduler.w(t)
+        # w = self.scheduler.w(t) # Unused in this logic
 
+        # Linear Scheduler convention: alpha=t, sigma=1-t
         x_t = alpha * x + noise * sigma
+        
+        # Target velocity v_t = dx_t/dt = x - noise (for Linear Schedule)
         v_t = dalpha * x + dsigma * noise
+        
         out = net(x_t, t, y)
+
+        # Convert x_0 prediction to velocity v
+        out = (out - x_t) / sigma.clamp_min(self.t_eps)
 
         weight = self.loss_weight_fn(alpha, sigma)
 
