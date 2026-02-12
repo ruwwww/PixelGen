@@ -47,20 +47,12 @@ model:
   denoiser:
     class_path: src.models.transformer.dit_c2i_baseline.FlattenDiT
     init_args:
-      input_size: 256
       patch_size: 16
       in_channels: 3
       hidden_size: &hidden_dim 768
-      depth: 12
-      num_heads: 12
-      mlp_ratio: 4.0
-      attn_drop: 0.0
-      proj_drop: 0.0
+      num_blocks: 12
+      num_groups: 12
       num_classes: &num_classes 20
-      bottleneck_dim: 128
-      use_bottleneck: true
-      in_context_len: 32
-      in_context_start: 4
   conditioner:
     class_path: src.models.conditioner.class_label.LabelConditioner
     init_args:
