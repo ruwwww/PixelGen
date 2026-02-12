@@ -44,6 +44,7 @@ model:
     class_path: src.models.autoencoder.latent.LatentAE
     init_args:
       weight_path: stabilityai/sd-vae-ft-ema
+      precompute: true
   denoiser:
     class_path: src.models.transformer.dit_c2i_baseline.FlattenDiT
     init_args:
@@ -101,7 +102,8 @@ data:
   train_dataset:
     class_path: src.data.dataset.imagenet.PixImageNet
     init_args:
-      root: /data/batik-256/vae-sd
+      root: /data/batik-256/images
+      cache_path: /data/batik-256/vae-sd
       resolution: 256
   eval_dataset: null
   pred_dataset: null
