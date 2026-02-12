@@ -109,15 +109,21 @@ class PixImageNet(ImageFolder):
              # filename mapping:  image.jpg -> img-mean-std-image.npy
              # or just image.npy?
              # User ls: img-mean-std-000000000.npy
-             # Assuming image is 000000000.jpg
+             # Maps img000000000.jpg -> img-mean-std-000000000.npy
              rel_path = os.path.relpath(image_path, self.root)
              folder, filename = os.path.split(rel_path)
              filename_no_ext = os.path.splitext(filename)[0]
              
-             latent_filename = f"img-mean-std-{filename_no_ext}.npy"
+             # Handle "img" prefix if present
+             if filename_no_ext.startswith("img"):
+                 core_name = filename_no_ext[3:]
+             else:
+                 core_name = filename_no_ext
+                 
+             latent_filename = f"img-mean-std-{core_name}.npy"
              latent_path = os.path.join(self.cache_path, folder, latent_filename)
              
-             # Fallback if simple mapping doesn't work (e.g. if filenames differ in other ways)
+             # Fallback: try exact match just in case
              if not os.path.exists(latent_path):
                   # try direct replace extension
                   latent_path = os.path.join(self.cache_path, folder, filename_no_ext + ".npy")
