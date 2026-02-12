@@ -64,8 +64,9 @@ class LocalCachedDataset(ImageFolder):
 
 
 class PixImageNet(ImageFolder):
-    def __init__(self, root, resolution=256, random_crop=False, random_flip=False):
+    def __init__(self, root, resolution=256, random_crop=False, random_flip=False, cache_path=None):
         super().__init__(root)
+        self.cache_path = cache_path
         if random_crop:
             self.transform = torchvision.transforms.Compose(
                 [
@@ -85,13 +86,57 @@ class PixImageNet(ImageFolder):
             
         self.normalize = Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 
+    def load_latent(self, latent_path):
+        data = np.load(latent_path)
+        if len(data.shape) == 3:
+            # assume c,h,w
+            return torch.from_numpy(data)
+        elif len(data.shape) == 4:
+            # assume 1, c, h, w
+            return torch.from_numpy(data[0])
+        else:
+             raise ValueError(f"Unknown shape {data.shape} for {latent_path}")
+
     def __getitem__(self, idx: int):
         image_path, target = self.samples[idx]
         raw_image = Image.open(image_path).convert('RGB')
         raw_image = self.transform(raw_image)
         raw_image = to_tensor(raw_image)
 
-        normalized_image = self.normalize(raw_image)
+        if self.cache_path is not None:
+             # assume structure is identical
+             # filename mapping:  image.jpg -> img-mean-std-image.npy
+             # or just image.npy?
+             # User ls: img-mean-std-000000000.npy
+             # Assuming image is 000000000.jpg
+             rel_path = os.path.relpath(image_path, self.root)
+             folder, filename = os.path.split(rel_path)
+             filename_no_ext = os.path.splitext(filename)[0]
+             
+             latent_filename = f"img-mean-std-{filename_no_ext}.npy"
+             latent_path = os.path.join(self.cache_path, folder, latent_filename)
+             
+             # Fallback if simple mapping doesn't work (e.g. if filenames differ in other ways)
+             if not os.path.exists(latent_path):
+                  # try direct replace extension
+                  latent_path = os.path.join(self.cache_path, folder, filename_no_ext + ".npy")
+             
+             if os.path.exists(latent_path):
+                 latent_data = self.load_latent(latent_path)
+                 # sample if mean/std?
+                 # content is [mean, std] concatenated in channel dim?
+                 if latent_data.shape[0] == 8: # 2*4 channels
+                     mean, std = latent_data.chunk(2, dim=0)
+                     latent_data = mean + torch.randn_like(mean) * std
+                 
+                 normalized_image = latent_data
+             else:
+                 # fallback to encode on fly if not found? 
+                 # But model expects latent.
+                 print(f"Warning: Latent not found at {latent_path}, using raw image")
+                 normalized_image = self.normalize(raw_image)
+        else:
+             normalized_image = self.normalize(raw_image)
 
         metadata = {
             "raw_image": raw_image,
