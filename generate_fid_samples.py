@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Generate samples for FID calculation.
+
+Generates a specified number of images per class using a trained checkpoint.
+
+Usage:
+  python generate_fid_samples.py --ckpt /path/to/checkpoint.ckpt --out /path/to/output --num_classes 20 --samples_per_class 1000 --batch_size 50
+"""
+import argparse
+import os
+import torch
+import numpy as np
+from PIL import Image
+from tqdm import tqdm
+
+from src.lightning_model import LightningModel
+
+
+def to_image(x):
+    """Convert tensor to PIL Image.
+    
+    Args:
+        x: tensor [C,H,W] in [-1,1]
+    
+    Returns:
+        PIL Image
+    """
+    if isinstance(x, torch.Tensor):
+        x = x.detach().cpu().numpy()
+    if x.shape[0] == 3:
+        x = np.transpose(x, (1, 2, 0))
+    x = np.clip(x, -1, 1)
+    x = ((x + 1) / 2 * 255).astype(np.uint8)
+    return Image.fromarray(x)
+
+
+def load_model(ckpt, device):
+    """Load model from checkpoint.
+    
+    Args:
+        ckpt: Path to checkpoint file
+        device: Device to load model on
+    
+    Returns:
+        Loaded LightningModel
+    """
+    print(f"Loading checkpoint: {ckpt}")
+    model = None
+    
+    # Try direct Lightning load
+    try:
+        model: LightningModel = LightningModel.load_from_checkpoint(ckpt)
+        print("Loaded LightningModel via load_from_checkpoint")
+    except TypeError as e:
+        print(f"Direct load failed ({e}). Trying to instantiate model from config...")
+        # require config yaml path in CKPT directory or via env
+        import yaml, importlib, glob, inspect
+        
+        # Try to find config next to checkpoint (search for YAML files)
+        config_path = None
+        ckpt_dir = os.path.dirname(ckpt)
+        yaml_candidates = glob.glob(os.path.join(ckpt_dir, "*.yaml")) + glob.glob(os.path.join(ckpt_dir, "*.yml"))
+        if yaml_candidates:
+            # prefer filenames containing 'config' or 'cfg'
+            for p in yaml_candidates:
+                if 'config' in os.path.basename(p) or 'cfg' in os.path.basename(p):
+                    config_path = p
+                    break
+            if config_path is None:
+                config_path = yaml_candidates[0]
+        if config_path is None:
+            raise RuntimeError("Cannot find config next to checkpoint. Rerun script with --config /path/to/config.yaml")
+
+        conf = yaml.safe_load(open(config_path))
+        model_conf = conf.get('model', {})
+
+        def resolve_python_path(val):
+            """If val is a string like 'module.attr', import and return attr."""
+            if not isinstance(val, str) or '.' not in val:
+                return val
+            module_name, attr_name = val.rsplit('.', 1)
+            try:
+                mod = importlib.import_module(module_name)
+                attr = getattr(mod, attr_name)
+                if inspect.isclass(attr):
+                    try:
+                        return attr()
+                    except Exception:
+                        return attr
+                else:
+                    return attr
+            except Exception:
+                return val
+
+        def instantiate_node(node):
+            if isinstance(node, dict) and 'class_path' in node:
+                class_path = node['class_path']
+                init_args = node.get('init_args', {}) or {}
+                # recursively instantiate nested class args
+                for k, v in list(init_args.items()):
+                    if isinstance(v, dict) and 'class_path' in v:
+                        init_args[k] = instantiate_node(v)
+                    elif isinstance(v, str) and '.' in v:
+                        init_args[k] = resolve_python_path(v)
+                module_name, class_name = class_path.rsplit('.', 1)
+                mod = importlib.import_module(module_name)
+                cls = getattr(mod, class_name)
+                return cls(**init_args)
+            # if it's a plain string referencing a python path, resolve
+            if isinstance(node, str) and '.' in node:
+                return resolve_python_path(node)
+            return node
+
+        vae = instantiate_node(model_conf['vae'])
+        denoiser = instantiate_node(model_conf['denoiser'])
+        conditioner = instantiate_node(model_conf['conditioner'])
+        diffusion_trainer = instantiate_node(model_conf['diffusion_trainer'])
+        diffusion_sampler = instantiate_node(model_conf['diffusion_sampler'])
+
+        model = LightningModel(vae, conditioner, denoiser, diffusion_trainer, diffusion_sampler)
+
+        # load checkpoint state dict
+        ckpt_data = torch.load(ckpt, map_location='cpu')
+        sd = ckpt_data.get('state_dict', ckpt_data)
+        model.load_state_dict(sd, strict=False)
+        print("Instantiated model from config and loaded state_dict (non-strict)")
+
+    model.to(device)
+    model.eval()
+    return model
+
+
+def generate_fid_samples(
+    ckpt,
+    out_dir,
+    num_classes=20,
+    samples_per_class=1000,
+    batch_size=50,
+    use_ema=True,
+    device=None,
+    cfg_scale=None,
+    seed=42
+):
+    """Generate samples for FID calculation.
+    
+    Args:
+        ckpt: Path to checkpoint file
+        out_dir: Output directory for generated images
+        num_classes: Number of classes
+        samples_per_class: Number of samples to generate per class
+        batch_size: Batch size for generation
+        use_ema: Whether to use EMA model
+        device: Device to use
+        cfg_scale: Classifier-free guidance scale (optional)
+        seed: Random seed
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Set seed for reproducibility
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    
+    # Load model
+    model = load_model(ckpt, device)
+    
+    # Choose network (EMA or raw)
+    net = model.ema_denoiser if use_ema else model.denoiser
+    net.to(device)
+    net.eval()
+    
+    sampler = model.diffusion_sampler
+    
+    # Get latent shape
+    C = model.denoiser.in_channels
+    S = model.denoiser.input_size
+    latent_shape = (C, S, S)
+    
+    print(f"Generating {num_classes * samples_per_class} images total ({samples_per_class} per class)")
+    print(f"Latent shape: {latent_shape}")
+    print(f"Batch size: {batch_size}")
+    print(f"Using {'EMA' if use_ema else 'raw'} denoiser")
+    if cfg_scale is not None:
+        print(f"CFG scale: {cfg_scale}")
+    
+    # Generate samples for each class
+    total_generated = 0
+    for class_idx in range(num_classes):
+        class_dir = os.path.join(out_dir, f"class_{class_idx:03d}")
+        os.makedirs(class_dir, exist_ok=True)
+        
+        num_batches = (samples_per_class + batch_size - 1) // batch_size
+        samples_generated = 0
+        
+        print(f"\nGenerating class {class_idx}/{num_classes-1}...")
+        
+        for batch_idx in tqdm(range(num_batches), desc=f"Class {class_idx}"):
+            # Determine actual batch size (last batch might be smaller)
+            current_batch_size = min(batch_size, samples_per_class - samples_generated)
+            
+            # Create labels for this batch
+            y = torch.full((current_batch_size,), class_idx, dtype=torch.long, device=device)
+            
+            # Get condition tensors
+            with torch.no_grad():
+                condition, uncondition = model.conditioner(y)
+            
+            # Create initial noise
+            noise = torch.randn((current_batch_size, *latent_shape), device=device)
+            
+            # Sample
+            with torch.no_grad():
+                if cfg_scale is not None and hasattr(sampler, 'cfg_scale'):
+                    # Some samplers support CFG scale directly
+                    old_cfg = getattr(sampler, 'cfg_scale', None)
+                    sampler.cfg_scale = cfg_scale
+                    latents = sampler(net, noise, condition, uncondition)
+                    if old_cfg is not None:
+                        sampler.cfg_scale = old_cfg
+                else:
+                    latents = sampler(net, noise, condition, uncondition)
+            
+            # Decode latents to images
+            with torch.no_grad():
+                images = model.vae.decode(latents)
+            
+            # Save images
+            for i in range(current_batch_size):
+                img = to_image(images[i])
+                img_path = os.path.join(class_dir, f"{samples_generated:05d}.png")
+                img.save(img_path)
+                samples_generated += 1
+                total_generated += 1
+            
+            # Free GPU memory
+            del noise, condition, uncondition, latents, images
+            if device == "cuda":
+                torch.cuda.empty_cache()
+        
+        print(f"Class {class_idx}: Generated {samples_generated} images")
+    
+    print(f"\nTotal images generated: {total_generated}")
+    print(f"Output directory: {out_dir}")
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Generate samples for FID calculation')
+    parser.add_argument('--ckpt', type=str, required=True, help='Path to checkpoint file')
+    parser.add_argument('--out', type=str, default='fid_samples', help='Output directory')
+    parser.add_argument('--num_classes', type=int, default=20, help='Number of classes')
+    parser.add_argument('--samples_per_class', type=int, default=1000, help='Number of samples per class')
+    parser.add_argument('--batch_size', type=int, default=50, help='Batch size for generation')
+    parser.add_argument('--no-ema', action='store_true', help='Use raw denoiser instead of EMA')
+    parser.add_argument('--cfg_scale', type=float, default=None, help='Classifier-free guidance scale')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
+    parser.add_argument('--device', type=str, default=None, help='Device (cuda/cpu), auto-detect if not specified')
+    
+    args = parser.parse_args()
+    
+    generate_fid_samples(
+        ckpt=args.ckpt,
+        out_dir=args.out,
+        num_classes=args.num_classes,
+        samples_per_class=args.samples_per_class,
+        batch_size=args.batch_size,
+        use_ema=not args.no_ema,
+        device=args.device,
+        cfg_scale=args.cfg_scale,
+        seed=args.seed
+    )
