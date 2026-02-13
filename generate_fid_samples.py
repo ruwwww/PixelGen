@@ -114,10 +114,12 @@ def load_model(ckpt, device):
         vae = instantiate_node(model_conf['vae'])
         denoiser = instantiate_node(model_conf['denoiser'])
         conditioner = instantiate_node(model_conf['conditioner'])
-        diffusion_trainer = instantiate_node(model_conf['diffusion_trainer'])
+        # Skip diffusion_trainer for inference (it contains perceptual losses we don't need)
+        # diffusion_trainer = instantiate_node(model_conf['diffusion_trainer'])
         diffusion_sampler = instantiate_node(model_conf['diffusion_sampler'])
 
-        model = LightningModel(vae, conditioner, denoiser, diffusion_trainer, diffusion_sampler)
+        # Create a minimal model without trainer (set to None for inference)
+        model = LightningModel(vae, conditioner, denoiser, None, diffusion_sampler)
 
         # load checkpoint state dict
         ckpt_data = torch.load(ckpt, map_location='cpu')
