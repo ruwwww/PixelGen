@@ -250,7 +250,10 @@ def download_step(hf_repo, exp_name, step, out_dir, token):
         print('Downloading', p)
         local = hf_hub_download(hf_repo, p, repo_type='model', token=token)
         dest = os.path.join(out_dir, os.path.basename(p))
-        os.replace(local, dest)
+        # Use copy + remove instead of replace to handle cross-device links
+        import shutil
+        shutil.copy2(local, dest)
+        os.remove(local)
         print('Saved to', dest)
 
 
