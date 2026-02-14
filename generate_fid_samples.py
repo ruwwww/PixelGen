@@ -4,7 +4,7 @@
 Generates a specified number of images per class using a trained checkpoint.
 
 Usage:
-  python generate_fid_samples.py --ckpt /path/to/checkpoint.ckpt --out /path/to/output --num_classes 20 --samples_per_class 1000 --batch_size 50
+  python generate_fid_samples.py --ckpt /path/to/checkpoint.ckpt --out /path/to/output --num_classes 20 --samples_per_class 1000 --batch_size 50 --num_steps 100
 """
 import argparse
 import os
@@ -141,7 +141,8 @@ def generate_fid_samples(
     use_ema=True,
     device=None,
     cfg_scale=None,
-    seed=42
+    seed=42,
+    num_steps=None
 ):
     """Generate samples for FID calculation.
     
@@ -155,6 +156,7 @@ def generate_fid_samples(
         device: Device to use
         cfg_scale: Classifier-free guidance scale (optional)
         seed: Random seed
+        num_steps: Override number of sampling steps (NFE)
     """
     os.makedirs(out_dir, exist_ok=True)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -172,6 +174,12 @@ def generate_fid_samples(
     net.eval()
     
     sampler = model.diffusion_sampler
+    
+    # Override num_steps if specified
+    if num_steps is not None:
+        original_num_steps = getattr(sampler, 'num_steps', None)
+        sampler.num_steps = num_steps
+        print(f"Overriding sampler num_steps: {original_num_steps} -> {num_steps}")
     
     # Get latent shape
     C = model.denoiser.in_channels
@@ -256,6 +264,7 @@ if __name__ == '__main__':
     parser.add_argument('--cfg_scale', type=float, default=None, help='Classifier-free guidance scale')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--device', type=str, default=None, help='Device (cuda/cpu), auto-detect if not specified')
+    parser.add_argument('--num_steps', type=int, default=None, help='Override number of sampling steps (NFE)')
     
     args = parser.parse_args()
     
@@ -268,5 +277,6 @@ if __name__ == '__main__':
         use_ema=not args.no_ema,
         device=args.device,
         cfg_scale=args.cfg_scale,
-        seed=args.seed
+        seed=args.seed,
+        num_steps=args.num_steps
     )

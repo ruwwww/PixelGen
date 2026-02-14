@@ -241,14 +241,14 @@ def download_step(hf_repo, exp_name, step, out_dir, token):
     os.makedirs(out_dir, exist_ok=True)
     # list remote files first
     api = HfApi(token=token)
-    files = api.list_repo_files(hf_repo, token=token)
+    files = api.list_repo_files(hf_repo)
     prefix = f"{exp_name}/step_{step}/"
     matches = [p for p in files if p.startswith(prefix)]
     if not matches:
         raise SystemExit(f'No files found at {prefix} in {hf_repo}')
     for p in matches:
         print('Downloading', p)
-        local = hf_hub_download(hf_repo, p, repo_type='model', use_auth_token=token)
+        local = hf_hub_download(hf_repo, p, repo_type='model', token=token)
         dest = os.path.join(out_dir, os.path.basename(p))
         os.replace(local, dest)
         print('Saved to', dest)
