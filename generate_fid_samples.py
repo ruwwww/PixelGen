@@ -188,7 +188,29 @@ def generate_fid_samples(
     
     # Get latent shape
     C = model.denoiser.in_channels
-    S = model.denoiser.input_size
+    
+    # Try to get spatial size from denoiser
+    if hasattr(model.denoiser, 'input_size'):
+        S = model.denoiser.input_size
+    else:
+        # For SD VAE, downsampling factor is typically 8
+        # Infer from VAE model config if available
+        print("Denoiser doesn't have input_size attribute, inferring from VAE...")
+        vae_downsampling = 8  # Default for SD-VAE
+        
+        # Try to get it from VAE model config
+        if hasattr(model.vae, 'model') and hasattr(model.vae.model, 'config'):
+            vae_config = model.vae.model.config
+            if hasattr(vae_config, 'block_out_channels'):
+                # SD-VAE has downsampling factor = 2^(len(block_out_channels) - 1)
+                vae_downsampling = 2 ** (len(vae_config.block_out_channels) - 1)
+        
+        # Assume 256x256 images (standard for ImageNet-like datasets)
+        # You can override this with a parameter if needed
+        image_size = 256
+        S = image_size // vae_downsampling
+        print(f"Inferred latent spatial size: {S} (image_size={image_size}, downsampling={vae_downsampling})")
+    
     latent_shape = (C, S, S)
     
     print(f"Generating {num_classes * samples_per_class} images total ({samples_per_class} per class)")
