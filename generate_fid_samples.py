@@ -34,12 +34,13 @@ def to_image(x):
     return Image.fromarray(x)
 
 
-def load_model(ckpt, device):
+def load_model(ckpt, device, config_path=None):
     """Load model from checkpoint.
     
     Args:
         ckpt: Path to checkpoint file
         device: Device to load model on
+        config_path: Optional path to config YAML file
     
     Returns:
         Loaded LightningModel
@@ -56,20 +57,22 @@ def load_model(ckpt, device):
         # require config yaml path in CKPT directory or via env
         import yaml, importlib, glob, inspect
         
-        # Try to find config next to checkpoint (search for YAML files)
-        config_path = None
-        ckpt_dir = os.path.dirname(ckpt)
-        yaml_candidates = glob.glob(os.path.join(ckpt_dir, "*.yaml")) + glob.glob(os.path.join(ckpt_dir, "*.yml"))
-        if yaml_candidates:
-            # prefer filenames containing 'config' or 'cfg'
-            for p in yaml_candidates:
-                if 'config' in os.path.basename(p) or 'cfg' in os.path.basename(p):
-                    config_path = p
-                    break
-            if config_path is None:
-                config_path = yaml_candidates[0]
+        # Try to find config next to checkpoint (search for YAML files) if not provided
         if config_path is None:
-            raise RuntimeError("Cannot find config next to checkpoint. Rerun script with --config /path/to/config.yaml")
+            ckpt_dir = os.path.dirname(ckpt)
+            yaml_candidates = glob.glob(os.path.join(ckpt_dir, "*.yaml")) + glob.glob(os.path.join(ckpt_dir, "*.yml"))
+            if yaml_candidates:
+                # prefer filenames containing 'config' or 'cfg'
+                for p in yaml_candidates:
+                    if 'config' in os.path.basename(p) or 'cfg' in os.path.basename(p):
+                        config_path = p
+                        break
+                if config_path is None:
+                    config_path = yaml_candidates[0]
+            if config_path is None:
+                raise RuntimeError("Cannot find config next to checkpoint. Rerun script with --config /path/to/config.yaml")
+        
+        print(f"Using config: {config_path}")
 
         conf = yaml.safe_load(open(config_path))
         model_conf = conf.get('model', {})
@@ -142,7 +145,8 @@ def generate_fid_samples(
     device=None,
     cfg_scale=None,
     seed=42,
-    num_steps=None
+    num_steps=None,
+    config_path=None
 ):
     """Generate samples for FID calculation.
     
@@ -157,6 +161,7 @@ def generate_fid_samples(
         cfg_scale: Classifier-free guidance scale (optional)
         seed: Random seed
         num_steps: Override number of sampling steps (NFE)
+        config_path: Optional path to config YAML file
     """
     os.makedirs(out_dir, exist_ok=True)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -166,7 +171,7 @@ def generate_fid_samples(
     np.random.seed(seed)
     
     # Load model
-    model = load_model(ckpt, device)
+    model = load_model(ckpt, device, config_path)
     
     # Choose network (EMA or raw)
     net = model.ema_denoiser if use_ema else model.denoiser
@@ -257,6 +262,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate samples for FID calculation')
     parser.add_argument('--ckpt', type=str, required=True, help='Path to checkpoint file')
     parser.add_argument('--out', type=str, default='fid_samples', help='Output directory')
+    parser.add_argument('--config', type=str, default=None, help='Path to config YAML file (optional, will auto-detect if not specified)')
     parser.add_argument('--num_classes', type=int, default=20, help='Number of classes')
     parser.add_argument('--samples_per_class', type=int, default=1000, help='Number of samples per class')
     parser.add_argument('--batch_size', type=int, default=50, help='Batch size for generation')
@@ -278,5 +284,6 @@ if __name__ == '__main__':
         device=args.device,
         cfg_scale=args.cfg_scale,
         seed=args.seed,
-        num_steps=args.num_steps
+        num_steps=args.num_steps,
+        config_path=args.config
     )
