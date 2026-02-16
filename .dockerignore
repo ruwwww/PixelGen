@@ -1,0 +1,32 @@
+# Exclude dataset, checkpoints, and large artifacts from Docker build context
+fid_samples/
+universal_pix_workdirs/
+outdir/
+mid_training_samples/
+it_b64/
+wandb/
+static/
+logs/
+data/
+
+# Large model/checkpoint files
+*.ckpt
+*.pt
+*.pth
+*.npz
+*.tar
+*.tar.gz
+
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Environment files
+.env
+
+# Git
+.git
