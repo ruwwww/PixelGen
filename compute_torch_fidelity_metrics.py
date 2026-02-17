@@ -17,6 +17,7 @@ import csv
 import argparse
 from pathlib import Path
 import sys
+import subprocess
 
 
 def find_steps(samples_dir: Path):
@@ -37,7 +38,7 @@ def try_import_torch_fidelity():
 def run():
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples_dir", default="fid_samples", help="Root folder containing generated samples")
-    parser.add_argument("--real_stats", default="batik-256_stats.npz", help="NPZ file of real dataset statistics or path to real images")
+    parser.add_argument("--real_stats", default="batik-256_stats.npz", help="NPZ file of real dataset statistics or path to directory of real images")
     parser.add_argument("--out_dir", default="fid_results", help="Where to write JSON + CSV results")
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--device", default=None, help="cuda or cpu (auto-detect if not set)")
@@ -56,44 +57,57 @@ def run():
     calc = try_import_torch_fidelity()
     if calc is None:
         print("torch_fidelity API not available. Install with `pip install torch-fidelity` and retry.")
-        print("If you prefer using the CLI, the equivalent command is:\n  python -m torch_fidelity.calculate_metrics --input1 <real_stats.npz> --input2 <samples_folder> --fid --prc --isc --batch-size 64 --json")
+        print("Alternatively, use the CLI: python -m torch_fidelity.calculate_metrics --input1 <real_stats> --input2 <samples_folder> --fid --isc --prc --batch-size 64 --json")
         raise SystemExit(1)
 
     # Determine cuda usage
     use_cuda = False
     if args.device:
-        use_cuda = (args.device == 'cuda')
+        use_cuda = (args.device.lower() == 'cuda')
     else:
         try:
             import torch
             use_cuda = torch.cuda.is_available()
-        except Exception:
+        except ImportError:
             use_cuda = False
+
+    is_npz = str(real_stats).lower().endswith('.npz')
 
     rows = []
     for exp_name, step_name, step_path in find_steps(samples_dir):
         print(f"Computing metrics for {exp_name}/{step_name} -> {step_path}")
+        metrics = {}
         try:
-            # Use Python API (handles both dataset paths and precomputed .npz)
-            kwargs = dict(
-                input1=str(real_stats),
-                input2=str(step_path),
-                batch_size=args.batch_size,
-                cuda=use_cuda,
-                isc=True,
-                fid=True,
-                prc=True,
-                verbose=True,  # Enable verbose for better debugging
-            )
-            metrics = calc(**kwargs)
-        except TypeError:
-            # Fallback without batch_size (older API compatibility)
-            try:
-                kwargs.pop('batch_size')
+            if is_npz:
+                # Use CLI for precomputed .npz stats
+                cmd = [
+                    sys.executable, '-m', 'torch_fidelity.calculate_metrics',
+                    '--input1', str(real_stats),
+                    '--input2', str(step_path),
+                    '--fid', '--isc', '--prc',
+                    '--batch-size', str(args.batch_size),
+                    '--json'
+                ]
+                if not use_cuda:
+                    cmd.append('--no-cuda')
+                proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                metrics = json.loads(proc.stdout)
+            else:
+                # Use Python API for directory of real images
+                kwargs = {
+                    'input1': str(real_stats),
+                    'input2': str(step_path),
+                    'batch_size': args.batch_size,
+                    'cuda': use_cuda,
+                    'isc': True,
+                    'fid': True,
+                    'prc': True,
+                    'verbose': True,
+                }
                 metrics = calc(**kwargs)
-            except Exception as e:
-                print(f"ERROR computing metrics for {step_path}: {e}")
-                metrics = {'error': str(e)}
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR running CLI: {e.stderr}\n{e.stdout}")
+            metrics = {'error': str(e)}
         except Exception as e:
             print(f"ERROR computing metrics for {step_path}: {e}")
             metrics = {'error': str(e)}
@@ -108,15 +122,15 @@ def run():
             for k, v in metrics.items():
                 kl = k.lower()
                 if 'fid' in kl or 'frechet' in kl:
-                    fid = float(v)
+                    fid = float(v) if v is not None else None
                 if 'inception_score_mean' in kl:
-                    is_mean = float(v)
+                    is_mean = float(v) if v is not None else None
                 if 'inception_score_std' in kl:
-                    is_std = float(v)
+                    is_std = float(v) if v is not None else None
                 if 'precision' in kl:
-                    precision = float(v)
+                    precision = float(v) if v is not None else None
                 if 'recall' in kl:
-                    recall = float(v)
+                    recall = float(v) if v is not None else None
 
         out_json = out_dir / f"{exp_name}__{step_name}.json"
         with open(out_json, 'w') as f:
