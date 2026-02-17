@@ -62,33 +62,68 @@ def run():
     for exp_name, step_name, step_path in find_steps(samples_dir):
         print(f"Computing metrics for {exp_name}/{step_name} -> {step_path}")
         try:
-            # call calculate_metrics using explicit metric flags (widest compatibility)
-            kwargs = dict(
-                input1=str(real_stats),
-                input2=str(step_path),
-                verbose=False,
-                fid=True,
-                precision=True,
-                recall=True,
-            )
-            # device arg may be 'cuda' or 'cpu'
-            if args.device:
-                kwargs['cuda'] = (args.device == 'cuda')
+            # If real_stats is a .npz we must use the CLI (torch-fidelity Python API
+            # does not accept precomputed stats). Use subprocess to call the CLI and
+            # parse JSON output. Otherwise try the Python API.
+            if str(real_stats).lower().endswith('.npz'):
+                import subprocess
+                cmd = [
+                    'python', '-m', 'torch_fidelity',
+                    '--input1', str(real_stats),
+                    '--input2', str(step_path),
+                    '--fid', '--precision', '--recall',
+                    '--batch-size', str(args.batch_size),
+                    '--json'
+                ]
+                # append --cuda if available/asked
+                use_cuda = False
+                if args.device:
+                    use_cuda = (args.device == 'cuda')
+                else:
+                    try:
+                        import torch
+                        use_cuda = torch.cuda.is_available()
+                    except Exception:
+                        use_cuda = False
+                if use_cuda:
+                    cmd.append('--cuda')
+
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    raise RuntimeError(proc.stderr or proc.stdout)
+                metrics = json.loads(proc.stdout)
             else:
-                # auto-detect
-                try:
-                    import torch
-                    kwargs['cuda'] = torch.cuda.is_available()
-                except Exception:
-                    kwargs['cuda'] = False
+                # call calculate_metrics using explicit metric flags (widest compatibility)
+                kwargs = dict(
+                    input1=str(real_stats),
+                    input2=str(step_path),
+                    verbose=False,
+                    fid=True,
+                    precision=True,
+                    recall=True,
+                )
+                # device arg may be 'cuda' or 'cpu'
+                if args.device:
+                    kwargs['cuda'] = (args.device == 'cuda')
+                else:
+                    # auto-detect
+                    try:
+                        import torch
+                        kwargs['cuda'] = torch.cuda.is_available()
+                    except Exception:
+                        kwargs['cuda'] = False
 
-            # pass batch_size if supported
-            kwargs['batch_size'] = args.batch_size
+                # pass batch_size if supported
+                kwargs['batch_size'] = args.batch_size
 
-            metrics = calc(**kwargs)
+                metrics = calc(**kwargs)
         except TypeError:
-            # try without batch_size
-            metrics = calc(input1=str(real_stats), input2=str(step_path))
+            # try without batch_size (Python API fallback)
+            try:
+                metrics = calc(input1=str(real_stats), input2=str(step_path))
+            except Exception as e:
+                print(f"ERROR computing metrics for {step_path}: {e}")
+                metrics = {'error': str(e)}
         except Exception as e:
             print(f"ERROR computing metrics for {step_path}: {e}")
             metrics = {'error': str(e)}
