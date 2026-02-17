@@ -16,6 +16,7 @@ import json
 import csv
 import argparse
 from pathlib import Path
+import sys
 
 
 def find_steps(samples_dir: Path):
@@ -68,7 +69,7 @@ def run():
             if str(real_stats).lower().endswith('.npz'):
                 import subprocess
                 cmd = [
-                    'python', '-m', 'torch_fidelity',
+                    sys.executable, '-m', 'torch_fidelity',
                     '--input1', str(real_stats),
                     '--input2', str(step_path),
                     '--fid', '--precision', '--recall',
