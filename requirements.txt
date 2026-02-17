@@ -15,4 +15,4 @@ einops
 lpips
 webdataset
 pyarrow
-torch-fidelity
+git+https://github.com/toshas/torch-fidelity.git
