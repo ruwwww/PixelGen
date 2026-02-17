@@ -62,8 +62,15 @@ def run():
     for exp_name, step_name, step_path in find_steps(samples_dir):
         print(f"Computing metrics for {exp_name}/{step_name} -> {step_path}")
         try:
-            # call calculate_metrics; be permissive about kwargs
-            kwargs = dict(input1=str(real_stats), input2=str(step_path), verbose=False, metrics='fid,precision,recall')
+            # call calculate_metrics using explicit metric flags (widest compatibility)
+            kwargs = dict(
+                input1=str(real_stats),
+                input2=str(step_path),
+                verbose=False,
+                fid=True,
+                precision=True,
+                recall=True,
+            )
             # device arg may be 'cuda' or 'cpu'
             if args.device:
                 kwargs['cuda'] = (args.device == 'cuda')
