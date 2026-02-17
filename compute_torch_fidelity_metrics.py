@@ -1,8 +1,9 @@
+
 #!/usr/bin/env python3
-"""Compute FID, IS, precision, recall for generated samples using torch-fidelity Python API.
+"""Compute FID, IS, precision, recall for generated samples using torch-fidelity.
 
 Scans `fid_samples/` for experiment/step folders, computes metrics against
-the provided real stats (NPZ or directory) and writes results to
+the provided real stats NPZ or directory and writes results to
 `fid_results/` as JSON and a combined CSV `fid_results/summary.csv`.
 
 Usage:
@@ -15,6 +16,7 @@ import json
 import csv
 import argparse
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -43,10 +45,18 @@ def run():
     if not real_stats.exists():
         raise SystemExit(f"Real stats NPZ or dir not found: {real_stats}")
 
+    # Check if torch_fidelity is installed
     try:
-        from torch_fidelity import calculate_metrics
+        import torch_fidelity
     except ImportError:
         print("torch_fidelity not installed. Install with `pip install torch-fidelity` and retry.")
+        raise SystemExit(1)
+
+    # Find the fidelity CLI binary
+    import shutil
+    fidelity_bin = shutil.which("fidelity")
+    if fidelity_bin is None:
+        print("'fidelity' command not found. Ensure torch-fidelity is installed correctly.")
         raise SystemExit(1)
 
     # Determine cuda usage
@@ -60,23 +70,50 @@ def run():
         except ImportError:
             use_cuda = False
 
+    is_npz = real_stats.is_file() and str(real_stats).lower().endswith('.npz')
+
     rows = []
     for exp_name, step_name, step_path in find_steps(samples_dir):
         print(f"Computing metrics for {exp_name}/{step_name} -> {step_path}")
         metrics = {}
         try:
-            # Use Python API: input1 = generated images dir, input2 = real (dir or .npz)
-            kwargs = {
-                'input1': str(step_path),
-                'input2': str(real_stats),
-                'batch_size': args.batch_size,
-                'cuda': use_cuda,
-                'isc': True,
-                'fid': True,
-                'prc': True,
-                'verbose': True,
-            }
-            metrics = calculate_metrics(**kwargs)
+            if is_npz:
+                # Use CLI for .npz precomputed stats
+                cmd = [
+                    fidelity_bin,
+                    '--input1', str(real_stats),
+                    '--input2', str(step_path),
+                    '--batch-size', str(args.batch_size),
+                    '--isc', '--fid', '--prc',
+                    '--samples-find-deep',  # Enable recursive search for samples in subdirs
+                    '--json',
+                    '--silent',  # Reduce verbosity if needed, or remove for more logs
+                ]
+                if use_cuda:
+                    cmd += ['--gpu', '0']
+                else:
+                    cmd.append('--no-cuda')
+
+                proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                metrics = json.loads(proc.stdout)
+            else:
+                # Use Python API for directory of real images
+                from torch_fidelity import calculate_metrics
+                kwargs = {
+                    'input1': str(step_path),
+                    'input2': str(real_stats),
+                    'batch_size': args.batch_size,
+                    'cuda': use_cuda,
+                    'isc': True,
+                    'fid': True,
+                    'prc': True,
+                    'verbose': True,
+                    'samples_find_deep': True,  # Enable recursive search
+                }
+                metrics = calculate_metrics(**kwargs)
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR running CLI for {step_path}: {e}\nSTDERR: {e.stderr}\nSTDOUT: {e.stdout}")
+            metrics = {'error': str(e)}
         except Exception as e:
             print(f"ERROR computing metrics for {step_path}: {e}")
             metrics = {'error': str(e)}
