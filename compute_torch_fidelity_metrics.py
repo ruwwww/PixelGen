@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compute FID, precision, recall for generated samples using torch-fidelity.
+"""Compute FID, IS, precision, recall for generated samples using torch-fidelity.
 
 Scans `fid_samples/` for experiment/step folders, computes metrics against
 the provided real stats NPZ (`batik-256_stats.npz`) and writes results to
@@ -37,7 +37,7 @@ def try_import_torch_fidelity():
 def run():
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples_dir", default="fid_samples", help="Root folder containing generated samples")
-    parser.add_argument("--real_stats", default="batik-256_stats.npz", help="NPZ file of real dataset statistics")
+    parser.add_argument("--real_stats", default="batik-256_stats.npz", help="NPZ file of real dataset statistics or path to real images")
     parser.add_argument("--out_dir", default="fid_results", help="Where to write JSON + CSV results")
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--device", default=None, help="cuda or cpu (auto-detect if not set)")
@@ -51,82 +51,46 @@ def run():
     if not samples_dir.exists():
         raise SystemExit(f"Samples dir not found: {samples_dir}")
     if not real_stats.exists():
-        raise SystemExit(f"Real stats NPZ not found: {real_stats}")
+        raise SystemExit(f"Real stats NPZ or dir not found: {real_stats}")
 
     calc = try_import_torch_fidelity()
     if calc is None:
         print("torch_fidelity API not available. Install with `pip install torch-fidelity` and retry.")
-        print("If you prefer using the CLI, the equivalent command is:\n  python -m torch_fidelity --input1 <real_stats.npz> --input2 <samples_folder> --metric fid,precision,recall")
+        print("If you prefer using the CLI, the equivalent command is:\n  python -m torch_fidelity.calculate_metrics --input1 <real_stats.npz> --input2 <samples_folder> --fid --prc --isc --batch-size 64 --json")
         raise SystemExit(1)
+
+    # Determine cuda usage
+    use_cuda = False
+    if args.device:
+        use_cuda = (args.device == 'cuda')
+    else:
+        try:
+            import torch
+            use_cuda = torch.cuda.is_available()
+        except Exception:
+            use_cuda = False
 
     rows = []
     for exp_name, step_name, step_path in find_steps(samples_dir):
         print(f"Computing metrics for {exp_name}/{step_name} -> {step_path}")
         try:
-            # If real_stats is a .npz we must use the CLI (torch-fidelity Python API
-            # does not accept precomputed stats). Use subprocess to call the CLI and
-            # parse JSON output. Otherwise try the Python API.
-            if str(real_stats).lower().endswith('.npz'):
-                import subprocess
-                # Check for 'fidelity' command first
-                fidelity_cmd = 'fidelity'
-                # If running via python -m torch_fidelity failed, try direct 'fidelity' command
-                # or locate the entry point script
-                
-                cmd = [
-                    fidelity_cmd,
-                    '--input1', str(real_stats),
-                    '--input2', str(step_path),
-                    '--fid', '--precision', '--recall',
-                    '--batch-size', str(args.batch_size),
-                    '--json'
-                ]
-                # append --cuda if available/asked
-                use_cuda = False
-                if args.device:
-                    use_cuda = (args.device == 'cuda')
-                else:
-                    try:
-                        import torch
-                        use_cuda = torch.cuda.is_available()
-                    except Exception:
-                        use_cuda = False
-                if use_cuda:
-                    cmd.append('--cuda')
-
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-                if proc.returncode != 0:
-                    raise RuntimeError(f"Command '{' '.join(cmd)}' failed:\n{proc.stderr}\n{proc.stdout}")
-                metrics = json.loads(proc.stdout)
-            else:
-                # call calculate_metrics using explicit metric flags (widest compatibility)
-                kwargs = dict(
-                    input1=str(real_stats),
-                    input2=str(step_path),
-                    verbose=False,
-                    fid=True,
-                    precision=True,
-                    recall=True,
-                )
-                # device arg may be 'cuda' or 'cpu'
-                if args.device:
-                    kwargs['cuda'] = (args.device == 'cuda')
-                else:
-                    # auto-detect
-                    try:
-                        import torch
-                        kwargs['cuda'] = torch.cuda.is_available()
-                    except Exception:
-                        kwargs['cuda'] = False
-
-                # pass batch_size if supported
-                kwargs['batch_size'] = args.batch_size
-
-                metrics = calc(**kwargs)
+            # Use Python API (handles both dataset paths and precomputed .npz)
+            kwargs = dict(
+                input1=str(real_stats),
+                input2=str(step_path),
+                batch_size=args.batch_size,
+                cuda=use_cuda,
+                isc=True,
+                fid=True,
+                prc=True,
+                verbose=True,  # Enable verbose for better debugging
+            )
+            metrics = calc(**kwargs)
         except TypeError:
-            # try without batch_size (Python API fallback)
+            # Fallback without batch_size (older API compatibility)
             try:
-                metrics = calc(input1=str(real_stats), input2=str(step_path))
+                kwargs.pop('batch_size')
+                metrics = calc(**kwargs)
             except Exception as e:
                 print(f"ERROR computing metrics for {step_path}: {e}")
                 metrics = {'error': str(e)}
@@ -134,8 +98,10 @@ def run():
             print(f"ERROR computing metrics for {step_path}: {e}")
             metrics = {'error': str(e)}
 
-        # normalize metric keys and extract fid/precision/recall if present
+        # Normalize metric keys and extract fid/is/precision/recall if present
         fid = None
+        is_mean = None
+        is_std = None
         precision = None
         recall = None
         if isinstance(metrics, dict):
@@ -143,21 +109,34 @@ def run():
                 kl = k.lower()
                 if 'fid' in kl or 'frechet' in kl:
                     fid = float(v)
-                if kl == 'precision':
+                if 'inception_score_mean' in kl:
+                    is_mean = float(v)
+                if 'inception_score_std' in kl:
+                    is_std = float(v)
+                if 'precision' in kl:
                     precision = float(v)
-                if kl == 'recall':
+                if 'recall' in kl:
                     recall = float(v)
 
         out_json = out_dir / f"{exp_name}__{step_name}.json"
         with open(out_json, 'w') as f:
             json.dump({'exp': exp_name, 'step': step_name, 'metrics': metrics}, f, indent=2)
 
-        rows.append({'experiment': exp_name, 'step': step_name, 'fid': fid, 'precision': precision, 'recall': recall, 'json': str(out_json)})
+        rows.append({
+            'experiment': exp_name,
+            'step': step_name,
+            'fid': fid,
+            'is_mean': is_mean,
+            'is_std': is_std,
+            'precision': precision,
+            'recall': recall,
+            'json': str(out_json)
+        })
 
-    # write CSV
+    # Write CSV
     csv_path = out_dir / 'summary.csv'
     with open(csv_path, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['experiment', 'step', 'fid', 'precision', 'recall', 'json'])
+        writer = csv.DictWriter(f, fieldnames=['experiment', 'step', 'fid', 'is_mean', 'is_std', 'precision', 'recall', 'json'])
         writer.writeheader()
         for r in rows:
             writer.writerow(r)
