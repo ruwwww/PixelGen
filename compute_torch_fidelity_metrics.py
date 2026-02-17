@@ -65,7 +65,7 @@ def run():
             "batch_size": args.batch_size,
             "isc": True,
             "fid": True,
-            "prc": compute_prc,
+            "prc": True,
             "samples_find_deep": True,     # <<< INI YANG FIX "Found 0 samples"
             "verbose": True,
         }
