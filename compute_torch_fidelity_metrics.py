@@ -68,8 +68,13 @@ def run():
             # parse JSON output. Otherwise try the Python API.
             if str(real_stats).lower().endswith('.npz'):
                 import subprocess
+                # Check for 'fidelity' command first
+                fidelity_cmd = 'fidelity'
+                # If running via python -m torch_fidelity failed, try direct 'fidelity' command
+                # or locate the entry point script
+                
                 cmd = [
-                    sys.executable, '-m', 'torch_fidelity',
+                    fidelity_cmd,
                     '--input1', str(real_stats),
                     '--input2', str(step_path),
                     '--fid', '--precision', '--recall',
@@ -91,7 +96,7 @@ def run():
 
                 proc = subprocess.run(cmd, capture_output=True, text=True)
                 if proc.returncode != 0:
-                    raise RuntimeError(proc.stderr or proc.stdout)
+                    raise RuntimeError(f"Command '{' '.join(cmd)}' failed:\n{proc.stderr}\n{proc.stdout}")
                 metrics = json.loads(proc.stdout)
             else:
                 # call calculate_metrics using explicit metric flags (widest compatibility)
