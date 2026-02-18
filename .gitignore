@@ -5,4 +5,7 @@ universal_pix_workdirs
 pretrained_weights
 wandb
 merge_weight.py
-*.pyc
+*.pycmid_training_samples/
+outdir/
+sampling_traj/
+it_b64/
