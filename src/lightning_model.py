@@ -129,6 +129,23 @@ class LightningModel(pl.LightningModule):
                 else:
                     pass
 
+        # Handle model architecture changes (e.g., JiT -> JiTSLA2)
+        # When architecture changes, drop optimizer state to avoid parameter group mismatch
+        denoiser_ckpt_keys = set(k.split('.', 1)[1] for k in ckpt_state_dict.keys() 
+                                   if k.startswith("denoiser."))
+        denoiser_curr_keys = set(k.split('.', 1)[1] for k in current_state_dict.keys() 
+                                  if k.startswith("denoiser."))
+        
+        architecture_changed = denoiser_ckpt_keys != denoiser_curr_keys
+        
+        if architecture_changed:
+            print(f"[Info] Detected model architecture change. "
+                  f"Dropping optimizer and lr_scheduler states to reinitialize.")
+            if "optimizer_states" in checkpoint:
+                checkpoint["optimizer_states"] = []
+            if "lr_schedulers" in checkpoint:
+                checkpoint["lr_schedulers"] = []
+
     def training_step(self, batch, batch_idx):
         x, y, metadata = batch
         if metadata is None:
