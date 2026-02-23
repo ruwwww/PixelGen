@@ -22,13 +22,15 @@ trainer:
       project: jit_b_pixel_ablation_sla2
       name: *exp
   num_sanity_val_steps: 0
-  max_steps: 1000000
+  max_steps: 1050000
   val_check_interval: null
   check_val_every_n_epoch: 1000000
   log_every_n_steps: 50
   deterministic: null
   inference_mode: true
   use_distributed_sampler: false
+  # Note: Checkpoint starts at step 1M. To fine-tune for 50k additional steps, max_steps = 1050000
+  # Override via CLI: --trainer.max_steps 1050000
   callbacks:
     - class_path: src.callbacks.model_checkpoint.CheckpointHook
       init_args:
