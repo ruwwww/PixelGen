@@ -97,7 +97,7 @@ class LearnableRouter(nn.Module):
         # Compute attention scores on compressed space
         scores = torch.matmul(q_proj, k_proj.transpose(-2, -1)) / math.sqrt(self.head_dim)
         scores = torch.softmax(scores, dim=-1)  # (B, H, L_c, L_c)
-        
+
         return scores, self.topk_ratio
 
 
@@ -190,6 +190,10 @@ class SparseLinearAttention(nn.Module):
         enable_qat: bool = True,
         use_bf16: bool = True,
         feature_map: str = 'softmax',
+        router_mode: str = 'hard',
+        soft_topk_tau: float = 1.0,
+        soft_topk_iters: int = 8,
+        router_aux_weight: float = 0.0,
     ):
         """
         Args:
@@ -212,6 +216,11 @@ class SparseLinearAttention(nn.Module):
         self.topk_ratio = topk_ratio
         self.enable_qat = enable_qat
         self.dtype = torch.bfloat16 if use_bf16 else torch.float16
+        self.router_mode = router_mode
+        self.soft_topk_tau = soft_topk_tau
+        self.soft_topk_iters = soft_topk_iters
+        self.router_aux_weight = router_aux_weight
+        self._router_aux_loss = None
         
         assert dim % num_heads == 0, f"dim {dim} should be divisible by num_heads {num_heads}"
         
@@ -260,6 +269,25 @@ class SparseLinearAttention(nn.Module):
         self.qat = QuantizationAwareTraining(enable_qat=enable_qat, dtype=self.dtype)
         
         self._init_weights()
+
+    def set_router_mode(self, mode: str, tau: Optional[float] = None) -> None:
+        if mode not in {"soft", "hard"}:
+            raise ValueError(f"Unsupported router mode: {mode}")
+        self.router_mode = mode
+        if tau is not None:
+            self.soft_topk_tau = tau
+
+    def set_topk_ratio(self, topk_ratio: float) -> None:
+        self.topk_ratio = topk_ratio
+        self.router.topk_ratio = topk_ratio
+
+    def set_router_aux_weight(self, weight: float) -> None:
+        self.router_aux_weight = weight
+
+    def pop_router_aux_loss(self) -> Optional[torch.Tensor]:
+        aux = self._router_aux_loss
+        self._router_aux_loss = None
+        return aux
     
     def _init_weights(self):
         """Initialize parameters"""
@@ -305,6 +333,12 @@ class SparseLinearAttention(nn.Module):
         alpha = alpha.view(1, self.num_heads, 1, 1)  # (1, H, 1, 1)
         
         o = alpha * o_s + (1 - alpha) * o_l  # (B, H, N, D)
+
+        self._router_aux_loss = None
+        if self.training and self.router_mode == "soft" and self.router_aux_weight > 0.0:
+            with torch.no_grad():
+                o_full = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
+            self._router_aux_loss = self.router_aux_weight * F.mse_loss(o, o_full)
         
         # Merge heads and project
         o = o.transpose(1, 2).reshape(B, N, C)  # (B, N, C)
@@ -312,6 +346,35 @@ class SparseLinearAttention(nn.Module):
         o = self.proj_drop(o)
         
         return o.to(original_dtype)
+
+    def _soft_topk_mask(self, scores: torch.Tensor) -> torch.Tensor:
+        target = self.topk_ratio * scores.size(-1)
+        target = torch.full(scores.shape[:-1] + (1,), target, device=scores.device, dtype=scores.dtype)
+
+        lo = torch.full_like(target, -20.0)
+        hi = torch.full_like(target, 20.0)
+        tau = max(self.soft_topk_tau, 1e-6)
+
+        for _ in range(self.soft_topk_iters):
+            mid = (lo + hi) * 0.5
+            probs = torch.sigmoid(scores / tau + mid)
+            sums = probs.sum(dim=-1, keepdim=True)
+            lo = torch.where(sums < target, mid, lo)
+            hi = torch.where(sums > target, mid, hi)
+
+        return torch.sigmoid(scores / tau + hi)
+
+    def _hard_topk_mask(self, scores: torch.Tensor) -> torch.Tensor:
+        topk = max(1, int(self.topk_ratio * scores.size(-1)))
+        values, indices = torch.topk(scores, topk, dim=-1)
+        mask = torch.zeros_like(scores)
+        mask.scatter_(-1, indices, 1.0)
+        return mask
+
+    def _expand_router_mask(self, mask_c: torch.Tensor, target_len: int) -> torch.Tensor:
+        block = int(self.router.compression_ratio)
+        mask = mask_c.repeat_interleave(block, dim=-2).repeat_interleave(block, dim=-1)
+        return mask[..., :target_len, :target_len]
     
     def _sparse_attention(
         self,
@@ -332,8 +395,14 @@ class SparseLinearAttention(nn.Module):
         """
         B, H, N, D = q.shape
         
-        # Get routing weights from learnable router
+        # Get routing scores from learnable router
         routing_scores, _ = self.router(q, k)  # (B, H, L_c, L_c)
+        if self.router_mode == "soft":
+            mask_c = self._soft_topk_mask(routing_scores)
+        else:
+            mask_c = self._hard_topk_mask(routing_scores)
+
+        router_mask = self._expand_router_mask(mask_c, N)
         
         # Compute attention scores with softmax
         q_scaled = q / math.sqrt(D)
@@ -343,18 +412,8 @@ class SparseLinearAttention(nn.Module):
         attn_weights = F.softmax(scores, dim=-1)
         attn_weights = self.attn_drop(attn_weights)
         
-        # Sparse attention via top-k masking
-        topk = max(1, int(N * self.topk_ratio))
-        
-        # Apply top-k sparsity pattern
-        topk_weights, topk_indices = torch.topk(attn_weights, topk, dim=-1)
-        
-        # Create sparse mask
-        sparse_mask = torch.zeros_like(attn_weights)
-        sparse_mask.scatter_(-1, topk_indices, 1)
-        
-        # Apply mask and renormalize
-        attn_weights_sparse = attn_weights * sparse_mask
+        # Apply router mask (soft or hard) and renormalize
+        attn_weights_sparse = attn_weights * router_mask
         attn_weights_sparse = attn_weights_sparse / (attn_weights_sparse.sum(dim=-1, keepdim=True) + 1e-8)
         
         # Compute output with sparse weights

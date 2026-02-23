@@ -138,6 +138,11 @@ class LightningModel(pl.LightningModule):
             x = self.vae.encode(x)
             condition, uncondition = self.conditioner(y, metadata)
         loss = self.diffusion_trainer(self.denoiser, self.ema_denoiser, self.diffusion_sampler, x, condition, uncondition, metadata)
+        if hasattr(self.denoiser, "pop_sla2_aux_loss"):
+            aux_loss = self.denoiser.pop_sla2_aux_loss()
+            if aux_loss is not None:
+                loss["sla2_router_loss"] = aux_loss
+                loss["loss"] = loss["loss"] + aux_loss
         # to be do! fix the bug in tqdm iteration when enabling accumulate_grad_batches>1
         self.log_dict(loss, prog_bar=True, on_step=True, sync_dist=False)
         return loss["loss"]

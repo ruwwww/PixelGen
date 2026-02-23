@@ -163,6 +163,76 @@ class RouterParameterScheduler(Callback):
                     module.sla2.topk_ratio = current_topk_ratio
 
 
+class SLA2TwoStageScheduler(Callback):
+    """
+    Two-stage SLA2 training scheduler.
+
+    Stage 1: SoftTop-k routing with auxiliary MSE loss against full attention.
+    Stage 2: Hard Top-k routing with auxiliary loss disabled.
+    """
+
+    def __init__(
+        self,
+        warmup_steps: int = 10000,
+        soft_topk_ratio: float = 0.2,
+        hard_topk_ratio: float = 0.1,
+        soft_topk_tau: float = 1.0,
+        soft_topk_iters: int = 8,
+        router_aux_weight_stage1: float = 1.0,
+        router_aux_weight_stage2: float = 0.0,
+    ):
+        super().__init__()
+        self.warmup_steps = warmup_steps
+        self.soft_topk_ratio = soft_topk_ratio
+        self.hard_topk_ratio = hard_topk_ratio
+        self.soft_topk_tau = soft_topk_tau
+        self.soft_topk_iters = soft_topk_iters
+        self.router_aux_weight_stage1 = router_aux_weight_stage1
+        self.router_aux_weight_stage2 = router_aux_weight_stage2
+
+    def on_train_batch_start(
+        self,
+        trainer,
+        pl_module: LightningModule,
+        batch,
+        batch_idx: int,
+    ) -> None:
+        if trainer.global_step < self.warmup_steps:
+            self._apply_stage(
+                pl_module,
+                mode="soft",
+                topk_ratio=self.soft_topk_ratio,
+                tau=self.soft_topk_tau,
+                iters=self.soft_topk_iters,
+                aux_weight=self.router_aux_weight_stage1,
+            )
+        else:
+            self._apply_stage(
+                pl_module,
+                mode="hard",
+                topk_ratio=self.hard_topk_ratio,
+                tau=self.soft_topk_tau,
+                iters=self.soft_topk_iters,
+                aux_weight=self.router_aux_weight_stage2,
+            )
+
+    def _apply_stage(
+        self,
+        pl_module: LightningModule,
+        mode: str,
+        topk_ratio: float,
+        tau: float,
+        iters: int,
+        aux_weight: float,
+    ) -> None:
+        for module in pl_module.modules():
+            if hasattr(module, "sla2"):
+                module.sla2.set_router_mode(mode, tau=tau)
+                module.sla2.set_topk_ratio(topk_ratio)
+                module.sla2.soft_topk_iters = iters
+                module.sla2.set_router_aux_weight(aux_weight)
+
+
 class QuantizedAttentionMonitor(Callback):
     """
     Monitors quantization effects during training.

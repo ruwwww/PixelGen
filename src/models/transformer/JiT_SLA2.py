@@ -45,6 +45,10 @@ class SLA2Attention(nn.Module):
         compression_ratio: float = 8.0,
         enable_qat: bool = True,
         use_bf16: bool = True,
+        router_mode: str = "hard",
+        soft_topk_tau: float = 1.0,
+        soft_topk_iters: int = 8,
+        router_aux_weight: float = 0.0,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -60,6 +64,10 @@ class SLA2Attention(nn.Module):
             enable_qat=enable_qat,
             use_bf16=use_bf16,
             feature_map='softmax',
+            router_mode=router_mode,
+            soft_topk_tau=soft_topk_tau,
+            soft_topk_iters=soft_topk_iters,
+            router_aux_weight=router_aux_weight,
         )
     
     def forward(self, x: torch.Tensor, rope=None) -> torch.Tensor:
@@ -141,6 +149,10 @@ class JiTBlockSLA2(nn.Module):
         sla2_topk_ratio: float = 0.05,
         sla2_compression_ratio: float = 8.0,
         sla2_enable_qat: bool = True,
+        sla2_router_mode: str = "hard",
+        sla2_soft_topk_tau: float = 1.0,
+        sla2_soft_topk_iters: int = 8,
+        sla2_router_aux_weight: float = 0.0,
     ):
         super().__init__()
         self.norm1 = RMSNorm(hidden_size, eps=1e-6)
@@ -158,6 +170,10 @@ class JiTBlockSLA2(nn.Module):
                 compression_ratio=sla2_compression_ratio,
                 enable_qat=sla2_enable_qat,
                 use_bf16=True,
+                router_mode=sla2_router_mode,
+                soft_topk_tau=sla2_soft_topk_tau,
+                soft_topk_iters=sla2_soft_topk_iters,
+                router_aux_weight=sla2_router_aux_weight,
             )
         else:
             self.attn = StandardAttention(
@@ -231,6 +247,10 @@ class JiTSLA2(nn.Module):
         sla2_topk_ratio: float = 0.05,
         sla2_compression_ratio: float = 8.0,
         sla2_enable_qat: bool = True,
+        sla2_router_mode: str = "hard",
+        sla2_soft_topk_tau: float = 1.0,
+        sla2_soft_topk_iters: int = 8,
+        sla2_router_aux_weight: float = 0.0,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -298,6 +318,10 @@ class JiTSLA2(nn.Module):
                 sla2_topk_ratio=sla2_topk_ratio,
                 sla2_compression_ratio=sla2_compression_ratio,
                 sla2_enable_qat=sla2_enable_qat,
+                sla2_router_mode=sla2_router_mode,
+                sla2_soft_topk_tau=sla2_soft_topk_tau,
+                sla2_soft_topk_iters=sla2_soft_topk_iters,
+                sla2_router_aux_weight=sla2_router_aux_weight,
             )
             for i in range(depth)
         ])
@@ -433,6 +457,18 @@ class JiTSLA2(nn.Module):
                 return output, feat
         else:
             return output
+
+    def pop_sla2_aux_loss(self) -> torch.Tensor:
+        aux_losses = []
+        for module in self.modules():
+            if hasattr(module, "sla2") and hasattr(module.sla2, "pop_router_aux_loss"):
+                aux = module.sla2.pop_router_aux_loss()
+                if aux is not None:
+                    aux_losses.append(aux)
+
+        if not aux_losses:
+            return None
+        return torch.stack(aux_losses).sum()
 
 
 # Convenience constructors

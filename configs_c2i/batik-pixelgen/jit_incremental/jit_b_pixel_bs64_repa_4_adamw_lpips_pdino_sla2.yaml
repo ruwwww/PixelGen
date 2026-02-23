@@ -39,6 +39,15 @@ trainer:
       init_args:
         save_dir: val_ode50_cfg2.0
         save_compressed: true
+    - class_path: src.utils.sla2_training.SLA2TwoStageScheduler
+      init_args:
+        warmup_steps: 10000
+        soft_topk_ratio: 0.20
+        hard_topk_ratio: 0.10
+        soft_topk_tau: 1.0
+        soft_topk_iters: 8
+        router_aux_weight_stage1: 1.0
+        router_aux_weight_stage2: 0.0
   plugins:
     - src.plugins.bd_env.BDEnvironment
 
@@ -70,6 +79,10 @@ model:
       sla2_topk_ratio: 0.15                   # Use 15% sparse attention (85% sparsity)
       sla2_compression_ratio: 8.0             # Compress router input by 8x
       sla2_enable_qat: true                   # Enable quantization-aware training
+      sla2_router_mode: soft                  # soft for warmup, hard for finetune
+      sla2_soft_topk_tau: 1.0                 # SoftTop-k temperature
+      sla2_soft_topk_iters: 8                 # SoftTop-k bisection steps
+      sla2_router_aux_weight: 1.0             # MSE to full attention (stage 1)
   
   conditioner:
     class_path: src.models.conditioner.class_label.LabelConditioner
