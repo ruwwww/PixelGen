@@ -145,7 +145,7 @@ data:
       resolution: 256
   eval_dataset: null
   pred_dataset: null
-  train_batch_size: 64
+  train_batch_size: 32
   train_num_workers: 8
   pred_batch_size: 32
   pred_num_workers: 1
