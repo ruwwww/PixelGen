@@ -9,3 +9,4 @@ merge_weight.py
 outdir/
 sampling_traj/
 it_b64/
+*.cpython-*
