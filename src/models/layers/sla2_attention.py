@@ -455,7 +455,12 @@ class SparseLinearAttention(nn.Module):
         o_l = numerator / denominator  # (B, H, N, D)
         
         # Apply learned projection for additional flexibility
-        o_l = self.proj_l(o_l)
+        # Reshape from (B, H, N, D) to (B, N, H*D) for linear projection
+        batch_size, num_heads, seq_len, head_dim = o_l.shape
+        o_l = o_l.transpose(1, 2).reshape(batch_size, seq_len, -1)  # (B, N, H*D)
+        o_l = self.proj_l(o_l)  # (B, N, H*D)
+        # Reshape back to (B, H, N, D)
+        o_l = o_l.reshape(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
         
         return o_l
     
